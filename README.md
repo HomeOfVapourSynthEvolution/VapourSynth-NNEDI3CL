@@ -9,6 +9,8 @@ Ported from AviSynth plugin http://bengal.missouri.edu/~kes25c/ and borrowed som
 Usage
 =====
 
+The file `nnedi3_weights.bin` is required. On Windows, it must be located in the same folder as `NNEDI3CL.dll`. Everywhere else it can be located either in the same folder as `libnnedi3cl.so`/`libnnedi3cl.dylib`, or in `$prefix/share/nnedi3/`. The build system installs it at the latter location automatically.
+
     nnedi3cl.NNEDI3CL(clip, int field[, bint dh=False, int[] planes, int nsize=6, int nns=1, int qual=1, int etype=0, int device=-1, bint list_device=False, bint info=False])
 
 * clip: Clip to process. Any planar format with either integer sample type of 8-16 bit depth or float sample type of 32 bit depth is supported.
