@@ -109,32 +109,33 @@ static float8 internalProcess(const __local float (* input)[INPUT_WIDTH], __read
 
 __kernel __attribute__((reqd_work_group_size(8, 8, 1)))
 void process_uint(__read_only image2d_t src, __write_only image2d_t dst, __read_only image1d_buffer_t weights,
-                  const int srcWidth, const int srcHeight, const int dstWidth, const int dstHeight, const int field_n) {
-    const uint globalX = get_global_id(0);
-    const uint globalY = get_global_id(1);
-    const uint localX = get_local_id(0);
-    const uint localY = get_local_id(1);
+                  const int srcWidth, const int srcHeight, const int dstWidth, const int dstHeight, const int field_n, const int off, const int swap) {
+    const int globalX = get_global_id(0);
+    const int globalY = get_global_id(1);
+    const int localX = get_local_id(0);
+    const int localY = get_local_id(1);
 
-    const int _srcX = 32 - XDIAD2M1 + 64 * get_group_id(0) + localX;
-    int srcY = 6 + field_n - (YDIA - 1) + 2 * globalY;
+    const int _srcX = -XDIAD2M1 + 64 * get_group_id(0) + localX;
+    const int _srcY = field_n - Y_OFFSET + Y_STEP * globalY;
     const int _dstX = 8 * globalX;
+    const int dstYCopy = off + 2 * globalY;
     const int dstY = field_n + 2 * globalY;
 
     __local float input[INPUT_HEIGHT][INPUT_WIDTH];
 
-    for (uint y = localY; y < INPUT_HEIGHT; y += 8) {
-        if (srcY < srcHeight) {
-            int srcX = _srcX;
+    for (uint y = localY, j = 0; y < INPUT_HEIGHT; y += 8, j++) {
+        int srcY = _srcY + Y_STRIDE * j;
+        if (srcY < 0)
+            srcY = abs(srcY) + Y_STEP * off;
+        else if (srcY >= srcHeight)
+            srcY = 2 * srcHeight - srcY - 2 * Y_STEP;
 
-            for (uint x = localX; x < INPUT_WIDTH; x += 8) {
-                if (srcX < srcWidth) {
-                    input[y][x] = read_imageui(src, sampler, (int2)(srcX, srcY)).x;
+        for (uint x = localX, i = 0; x < INPUT_WIDTH; x += 8, i++) {
+            int srcX = abs(_srcX + 8 * i);
+            if (srcX >= srcWidth)
+                srcX = 2 * srcWidth - srcX - 2;
 
-                    srcX += 8;
-                }
-            }
-
-            srcY += 16;
+            input[y][x] = read_imageui(src, sampler, select((int2)(srcX, srcY), (int2)(srcY, srcX), (int2)swap)).x;
         }
     }
 
@@ -146,8 +147,8 @@ void process_uint(__read_only image2d_t src, __write_only image2d_t dst, __read_
         for (uint i = 0; i < 8; i++) {
             const int dstX = _dstX + i;
             if (dstX < dstWidth) {
-                const uint output = clamp((int)(((const float *)&mstd3)[i] + 0.5f), 0, PEAK);
-                write_imageui(dst, (int2)(dstX, dstY), output);
+                write_imageui(dst, select((int2)(dstX, dstYCopy), (int2)(dstYCopy, dstX), (int2)swap), input[YDIAD2M1 + localY + off][XDIAD2M1 + 8 * localX + i]);
+                write_imageui(dst, select((int2)(dstX, dstY), (int2)(dstY, dstX), (int2)swap), clamp((int)(((const float *)&mstd3)[i] + 0.5f), 0, PEAK));
             }
         }
     }
@@ -155,32 +156,33 @@ void process_uint(__read_only image2d_t src, __write_only image2d_t dst, __read_
 
 __kernel __attribute__((reqd_work_group_size(8, 8, 1)))
 void process_float(__read_only image2d_t src, __write_only image2d_t dst, __read_only image1d_buffer_t weights,
-                   const int srcWidth, const int srcHeight, const int dstWidth, const int dstHeight, const int field_n) {
-    const uint globalX = get_global_id(0);
-    const uint globalY = get_global_id(1);
-    const uint localX = get_local_id(0);
-    const uint localY = get_local_id(1);
+                   const int srcWidth, const int srcHeight, const int dstWidth, const int dstHeight, const int field_n, const int off, const int swap) {
+    const int globalX = get_global_id(0);
+    const int globalY = get_global_id(1);
+    const int localX = get_local_id(0);
+    const int localY = get_local_id(1);
 
-    const int _srcX = 32 - XDIAD2M1 + 64 * get_group_id(0) + localX;
-    int srcY = 6 + field_n - (YDIA - 1) + 2 * globalY;
+    const int _srcX = -XDIAD2M1 + 64 * get_group_id(0) + localX;
+    const int _srcY = field_n - Y_OFFSET + Y_STEP * globalY;
     const int _dstX = 8 * globalX;
+    const int dstYCopy = off + 2 * globalY;
     const int dstY = field_n + 2 * globalY;
 
     __local float input[INPUT_HEIGHT][INPUT_WIDTH];
 
-    for (uint y = localY; y < INPUT_HEIGHT; y += 8) {
-        if (srcY < srcHeight) {
-            int srcX = _srcX;
+    for (uint y = localY, j = 0; y < INPUT_HEIGHT; y += 8, j++) {
+        int srcY = _srcY + Y_STRIDE * j;
+        if (srcY < 0)
+            srcY = abs(srcY) + Y_STEP * off;
+        else if (srcY >= srcHeight)
+            srcY = 2 * srcHeight - srcY - 2 * Y_STEP;
 
-            for (uint x = localX; x < INPUT_WIDTH; x += 8) {
-                if (srcX < srcWidth) {
-                    input[y][x] = read_imagef(src, sampler, (int2)(srcX, srcY)).x;
+        for (uint x = localX, i = 0; x < INPUT_WIDTH; x += 8, i++) {
+            int srcX = abs(_srcX + 8 * i);
+            if (srcX >= srcWidth)
+                srcX = 2 * srcWidth - srcX - 2;
 
-                    srcX += 8;
-                }
-            }
-
-            srcY += 16;
+            input[y][x] = read_imagef(src, sampler, select((int2)(srcX, srcY), (int2)(srcY, srcX), (int2)swap)).x;
         }
     }
 
@@ -192,8 +194,8 @@ void process_float(__read_only image2d_t src, __write_only image2d_t dst, __read
         for (uint i = 0; i < 8; i++) {
             const int dstX = _dstX + i;
             if (dstX < dstWidth) {
-                const float output = ((const float *)&mstd3)[i];
-                write_imagef(dst, (int2)(dstX, dstY), output);
+                write_imagef(dst, select((int2)(dstX, dstYCopy), (int2)(dstYCopy, dstX), (int2)swap), input[YDIAD2M1 + localY + off][XDIAD2M1 + 8 * localX + i]);
+                write_imagef(dst, select((int2)(dstX, dstY), (int2)(dstY, dstX), (int2)swap), ((const float *)&mstd3)[i]);
             }
         }
     }
@@ -204,85 +206,49 @@ struct NNEDI3CLData {
     VSNodeRef * node;
     VSVideoInfo vi;
     int field;
-    bool dh, process[3];
+    bool dh, dw, process[3];
     compute::command_queue queue;
     compute::kernel kernel;
-    compute::image2d src, dst;
-    compute::buffer weightsBuffer, pad;
+    compute::image2d src, dst, tmp;
+    compute::buffer weightsBuffer;
     cl_mem weights;
-    void * padp;
-    int padWidth[3], padHeight[3];
 };
-
-template<typename T>
-static void copyPad(const VSFrameRef * src, const int plane, const int off, NNEDI3CLData * d, const VSAPI * vsapi) noexcept {
-    const int srcWidth = vsapi->getFrameWidth(src, plane);
-    const int dstWidth = d->padWidth[plane];
-    const int srcHeight = vsapi->getFrameHeight(src, plane);
-    const int dstHeight = d->padHeight[plane];
-    const int srcStride = vsapi->getStride(src, plane) / sizeof(T);
-    const int dstStride = dstWidth;
-    const T * srcp = reinterpret_cast<const T *>(vsapi->getReadPtr(src, plane));
-    T * VS_RESTRICT dstp = reinterpret_cast<T *>(d->padp);
-
-    if (!d->dh)
-        vs_bitblt(dstp + dstStride * (6 + off) + 32, dstStride * sizeof(T) * 2,
-                  srcp + srcStride * off, vsapi->getStride(src, plane) * 2,
-                  srcWidth * sizeof(T), srcHeight / 2);
-    else
-        vs_bitblt(dstp + dstStride * (6 + off) + 32, dstStride * sizeof(T) * 2,
-                  srcp, vsapi->getStride(src, plane),
-                  srcWidth * sizeof(T), srcHeight);
-
-    dstp += dstStride * (6 + off);
-
-    for (int y = 6 + off; y < dstHeight - 6; y += 2) {
-        for (int x = 0; x < 32; x++)
-            dstp[x] = dstp[64 - x];
-
-        for (int x = dstWidth - 32, c = 2; x < dstWidth; x++, c += 2)
-            dstp[x] = dstp[x - c];
-
-        dstp += dstStride * 2;
-    }
-
-    dstp = reinterpret_cast<T *>(d->padp);
-
-    for (int y = off; y < 6; y += 2)
-        memcpy(dstp + dstStride * y, dstp + dstStride * (12 + 2 * off - y), dstWidth * sizeof(T));
-
-    for (int y = dstHeight - 6 + off, c = 4; y < dstHeight; y += 2, c += 4)
-        memcpy(dstp + dstStride * y, dstp + dstStride * (y - c), dstWidth * sizeof(T));
-}
 
 template<typename T>
 static void process(const VSFrameRef * src, VSFrameRef * dst, const int field_n, NNEDI3CLData * d, const VSAPI * vsapi) {
     for (int plane = 0; plane < d->vi.format->numPlanes; plane++) {
         if (d->process[plane]) {
-            copyPad<T>(src, plane, 1 - field_n, d, vsapi);
-
-            const int srcWidth = d->padWidth[plane];
+            const int srcWidth = vsapi->getFrameWidth(src, plane);
             const int dstWidth = vsapi->getFrameWidth(dst, plane);
-            const int srcHeight = d->padHeight[plane];
+            const int srcHeight = vsapi->getFrameHeight(src, plane);
             const int dstHeight = vsapi->getFrameHeight(dst, plane);
-            const int srcStride = srcWidth;
-            const int dstStride = vsapi->getStride(dst, plane) / sizeof(T);
-            const T * srcp = reinterpret_cast<const T *>(d->padp);
+            const T * srcp = reinterpret_cast<const T *>(vsapi->getReadPtr(src, plane));
             T * VS_RESTRICT dstp = reinterpret_cast<T *>(vsapi->getWritePtr(dst, plane));
 
-            const size_t globalWorkSize[] = { static_cast<size_t>(((dstWidth + 7) / 8 + 7) & -8), static_cast<size_t>((dstHeight / 2 + 7) & -8) };
             constexpr size_t localWorkSize[] = { 8, 8 };
 
-            d->queue.enqueue_write_image(d->src, compute::dim(0, 0), compute::dim(srcWidth, srcHeight), srcp);
+            d->queue.enqueue_write_image(d->src, compute::dim(0, 0), compute::dim(srcWidth, srcHeight), srcp, vsapi->getStride(src, plane));
 
-            d->kernel.set_args(d->src, d->dst, d->weights, srcWidth, srcHeight, dstWidth, dstHeight, field_n);
-            d->queue.enqueue_nd_range_kernel(d->kernel, 2, nullptr, globalWorkSize, localWorkSize);
+            if (d->dh && d->dw) {
+                size_t globalWorkSize[] = { static_cast<size_t>(((srcHeight + 7) / 8 + 7) & -8), static_cast<size_t>((dstWidth / 2 + 7) & -8) };
+                d->kernel.set_args(d->src, d->tmp, d->weights, srcHeight, srcWidth, srcHeight, dstWidth, field_n, 1 - field_n, -1);
+                d->queue.enqueue_nd_range_kernel(d->kernel, 2, nullptr, globalWorkSize, localWorkSize);
+
+                globalWorkSize[0] = static_cast<size_t>(((dstWidth + 7) / 8 + 7) & -8);
+                globalWorkSize[1] = static_cast<size_t>((dstHeight / 2 + 7) & -8);
+                d->kernel.set_args(d->tmp, d->dst, d->weights, dstWidth, srcHeight, dstWidth, dstHeight, field_n, 1 - field_n, 0);
+                d->queue.enqueue_nd_range_kernel(d->kernel, 2, nullptr, globalWorkSize, localWorkSize);
+            } else if (d->dw) {
+                size_t globalWorkSize[] = { static_cast<size_t>(((dstHeight + 7) / 8 + 7) & -8), static_cast<size_t>((dstWidth / 2 + 7) & -8) };
+                d->kernel.set_args(d->src, d->dst, d->weights, srcHeight, srcWidth, dstHeight, dstWidth, field_n, 1 - field_n, -1);
+                d->queue.enqueue_nd_range_kernel(d->kernel, 2, nullptr, globalWorkSize, localWorkSize);
+            } else {
+                const size_t globalWorkSize[] = { static_cast<size_t>(((dstWidth + 7) / 8 + 7) & -8), static_cast<size_t>((dstHeight / 2 + 7) & -8) };
+                d->kernel.set_args(d->src, d->dst, d->weights, srcWidth, srcHeight, dstWidth, dstHeight, field_n, 1 - field_n, 0);
+                d->queue.enqueue_nd_range_kernel(d->kernel, 2, nullptr, globalWorkSize, localWorkSize);
+            }
 
             d->queue.enqueue_read_image(d->dst, compute::dim(0, 0), compute::dim(dstWidth, dstHeight), dstp, vsapi->getStride(dst, plane));
-
-            vs_bitblt(dstp + dstStride * (1 - field_n), vsapi->getStride(dst, plane) * 2,
-                      srcp + srcStride * (6 + 1 - field_n) + 32, srcStride * sizeof(T) * 2,
-                      dstWidth * sizeof(T), dstHeight / 2);
         }
     }
 }
@@ -366,8 +332,6 @@ static void VS_CC nnedi3clFree(void *instanceData, VSCore *core, const VSAPI *vs
 
     clReleaseMemObject(d->weights);
 
-    d->queue.enqueue_unmap_buffer(d->pad, d->padp);
-
     delete d;
 }
 
@@ -386,6 +350,8 @@ void VS_CC nnedi3clCreate(const VSMap *in, VSMap *out, void *userData, VSCore *c
         d->field = int64ToIntS(vsapi->propGetInt(in, "field", 0, nullptr));
 
         d->dh = !!vsapi->propGetInt(in, "dh", 0, &err);
+
+        d->dw = !!vsapi->propGetInt(in, "dw", 0, &err);
 
         const int m = vsapi->propNumElements(in, "planes");
 
@@ -430,6 +396,9 @@ void VS_CC nnedi3clCreate(const VSMap *in, VSMap *out, void *userData, VSCore *c
 
         if (d->dh && d->field > 1)
             throw std::string{ "field must be 0 or 1 when dh=True" };
+
+        if (d->dw && d->field > 1)
+            throw std::string{ "field must be 0 or 1 when dw=True" };
 
         if (nsize < 0 || nsize > 6)
             throw std::string{ "nsize must be 0, 1, 2, 3, 4, 5 or 6" };
@@ -485,6 +454,9 @@ void VS_CC nnedi3clCreate(const VSMap *in, VSMap *out, void *userData, VSCore *c
         if (d->dh)
             d->vi.height *= 2;
 
+        if (d->dw)
+            d->vi.width *= 2;
+
         const int peak = (1 << d->vi.format->bitsPerSample) - 1;
 
         const std::string pluginPath{ vsapi->getPluginPath(vsapi->getPluginById("com.holywu.nnedi3cl", core)) };
@@ -536,8 +508,8 @@ void VS_CC nnedi3clCreate(const VSMap *in, VSMap *out, void *userData, VSCore *c
 
         std::fclose(weightsFile);
 
-        const int dims0 = 49 * 4 + 5 * 4 + 9 * 4;
-        const int dims0new = 4 * 65 + 4 * 5;
+        constexpr int dims0 = 49 * 4 + 5 * 4 + 9 * 4;
+        constexpr int dims0new = 4 * 65 + 4 * 5;
         const int dims1 = nnsTable[nns] * 2 * (xdiaTable[nsize] * ydiaTable[nsize] + 1);
         int dims1tsize = 0, dims1offset = 0;
 
@@ -596,6 +568,7 @@ void VS_CC nnedi3clCreate(const VSMap *in, VSMap *out, void *userData, VSCore *c
         const int ydia = ydiaTable[nsize];
         const int asize = xdiaTable[nsize] * ydiaTable[nsize];
         const int xdiad2m1 = xdia / 2 - 1;
+        const int ydiad2m1 = ydia / 2 - 1;
         const int inputWidth = xdia + 64 - 1;
         const int inputHeight = ydia + 8 - 1;
         const float scaleAsize = 1.f / asize;
@@ -661,11 +634,21 @@ void VS_CC nnedi3clCreate(const VSMap *in, VSMap *out, void *userData, VSCore *c
             options += " -D YDIA=" + std::to_string(ydia);
             options += " -D ASIZE=" + std::to_string(asize);
             options += " -D XDIAD2M1=" + std::to_string(xdiad2m1);
+            options += " -D YDIAD2M1=" + std::to_string(ydiad2m1);
             options += " -D INPUT_WIDTH=" + std::to_string(inputWidth);
             options += " -D INPUT_HEIGHT=" + std::to_string(inputHeight);
             options += " -D SCALE_ASIZE=" + std::to_string(scaleAsize);
             options += " -D SCALE_QUAL=" + std::to_string(scaleQual);
             options += " -D PEAK=" + std::to_string(peak);
+            if (!(d->dh || d->dw)) {
+                options += " -D Y_OFFSET=" + std::to_string(ydia - 1);
+                options += " -D Y_STEP=" + std::to_string(2);
+                options += " -D Y_STRIDE=" + std::to_string(16);
+            } else {
+                options += " -D Y_OFFSET=" + std::to_string(ydia / 2);
+                options += " -D Y_STEP=" + std::to_string(1);
+                options += " -D Y_STRIDE=" + std::to_string(8);
+            }
             program.build(options);
         } catch (const compute::opencl_error & error) {
             throw error.error_string() + "\n" + program.build_log();
@@ -685,8 +668,9 @@ void VS_CC nnedi3clCreate(const VSMap *in, VSMap *out, void *userData, VSCore *c
             clImageFormat = { CL_R, CL_FLOAT };
         const compute::image_format imageFormat{ clImageFormat };
 
-        d->src = compute::image2d{ ctx, d->vi.width + 64U, d->vi.height + 12U, imageFormat, CL_MEM_READ_ONLY | CL_MEM_HOST_WRITE_ONLY };
-        d->dst = compute::image2d{ ctx, static_cast<size_t>(d->vi.width), static_cast<size_t>(d->vi.height), imageFormat, CL_MEM_WRITE_ONLY | CL_MEM_HOST_READ_ONLY };
+        d->src = compute::image2d{ ctx, static_cast<size_t>(vsapi->getVideoInfo(d->node)->width), static_cast<size_t>(vsapi->getVideoInfo(d->node)->height), imageFormat, CL_MEM_READ_ONLY | CL_MEM_HOST_WRITE_ONLY };
+        d->dst = compute::image2d{ ctx, static_cast<size_t>(std::max(d->vi.width, d->vi.height)), static_cast<size_t>(std::max(d->vi.width, d->vi.height)), imageFormat, CL_MEM_READ_WRITE | CL_MEM_HOST_READ_ONLY };
+        d->tmp = compute::image2d{ ctx, static_cast<size_t>(std::max(d->vi.width, d->vi.height)), static_cast<size_t>(std::max(d->vi.width, d->vi.height)), imageFormat, CL_MEM_READ_WRITE | CL_MEM_HOST_NO_ACCESS };
 
         {
             constexpr cl_image_format format = { CL_R, CL_FLOAT };
@@ -715,15 +699,6 @@ void VS_CC nnedi3clCreate(const VSMap *in, VSMap *out, void *userData, VSCore *c
 
             d->weights = mem;
         }
-
-        d->pad = compute::buffer{ ctx, (d->vi.width + 64U) * (d->vi.height + 12U) * d->vi.format->bytesPerSample, CL_MEM_READ_ONLY | CL_MEM_ALLOC_HOST_PTR };
-        d->padp = d->queue.enqueue_map_buffer(d->pad, CL_MAP_READ | CL_MAP_WRITE, 0, (d->vi.width + 64U) * (d->vi.height + 12U) * d->vi.format->bytesPerSample);
-        for (int plane = 0; plane < d->vi.format->numPlanes; plane++) {
-            if (d->process[plane]) {
-                d->padWidth[plane] = (d->vi.width >> (plane ? d->vi.format->subSamplingW : 0)) + 64;
-                d->padHeight[plane] = (d->vi.height >> (plane ? d->vi.format->subSamplingH : 0)) + 12;
-            }
-        }
     } catch (const std::string & error) {
         vsapi->setError(out, ("NNEDI3CL: " + error).c_str());
         vsapi->freeNode(d->node);
@@ -750,6 +725,7 @@ VS_EXTERNAL_API(void) VapourSynthPluginInit(VSConfigPlugin configFunc, VSRegiste
                  "clip:clip;"
                  "field:int;"
                  "dh:int:opt;"
+                 "dw:int:opt;"
                  "planes:int[]:opt;"
                  "nsize:int:opt;"
                  "nns:int:opt;"
