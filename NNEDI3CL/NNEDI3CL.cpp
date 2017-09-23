@@ -141,7 +141,7 @@ void process_uint(__read_only image2d_t src, __write_only image2d_t dst, __read_
 
     barrier(CLK_LOCAL_MEM_FENCE);
 
-    const float8 mstd3 = internalProcess(&input[localY][8 * localX], weights);
+    const float8 mstd3 = internalProcess((const __local float (*)[INPUT_WIDTH])&input[localY][8 * localX], weights);
 
     if (dstY < dstHeight) {
         for (uint i = 0; i < 8; i++) {
@@ -188,7 +188,7 @@ void process_float(__read_only image2d_t src, __write_only image2d_t dst, __read
 
     barrier(CLK_LOCAL_MEM_FENCE);
 
-    const float8 mstd3 = internalProcess(&input[localY][8 * localX], weights);
+    const float8 mstd3 = internalProcess((const __local float (*)[INPUT_WIDTH])&input[localY][8 * localX], weights);
 
     if (dstY < dstHeight) {
         for (uint i = 0; i < 8; i++) {
