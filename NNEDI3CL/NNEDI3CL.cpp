@@ -21,6 +21,7 @@
 */
 
 #include <cerrno>
+#include <clocale>
 #include <cstdio>
 #include <memory>
 #include <string>
@@ -625,6 +626,7 @@ void VS_CC nnedi3clCreate(const VSMap *in, VSMap *out, void *userData, VSCore *c
 
         compute::program program = compute::program::create_with_source(source, ctx);
         try {
+            std::setlocale(LC_ALL, "C");
             std::string options{ "-cl-single-precision-constant -cl-denorms-are-zero -cl-fast-relaxed-math -Werror" };
             options += " -D QUAL=" + std::to_string(qual);
             options += " -D DIMS1=" + std::to_string(dims1);
@@ -649,6 +651,7 @@ void VS_CC nnedi3clCreate(const VSMap *in, VSMap *out, void *userData, VSCore *c
                 options += " -D Y_STEP=" + std::to_string(1);
                 options += " -D Y_STRIDE=" + std::to_string(8);
             }
+            std::setlocale(LC_ALL, "");
             program.build(options);
         } catch (const compute::opencl_error & error) {
             throw error.error_string() + "\n" + program.build_log();

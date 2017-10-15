@@ -16,7 +16,7 @@
     <ProjectGuid>{F18719D2-CEF4-4D01-82C5-4DC7D9215B12}</ProjectGuid>
     <Keyword>Win32Proj</Keyword>
     <RootNamespace>NNEDI3CL</RootNamespace>
-    <WindowsTargetPlatformVersion>10.0.15063.0</WindowsTargetPlatformVersion>
+    <WindowsTargetPlatformVersion>10.0.16299.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" Label="Configuration">
