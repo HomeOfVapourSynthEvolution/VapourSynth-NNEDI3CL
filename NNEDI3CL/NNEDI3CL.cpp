@@ -806,6 +806,7 @@ void VS_CC nnedi3clCreate(const VSMap *in, VSMap *out, void *userData, VSCore *c
         compute::program program = compute::program::create_with_source(source, ctx);
         try {
             std::setlocale(LC_ALL, "C");
+            char buf[100];
             std::string options{ "-cl-single-precision-constant -cl-denorms-are-zero -cl-fast-relaxed-math -Werror" };
             options += " -D QUAL=" + std::to_string(qual);
             options += " -D PRESCREEN=" + std::string{ pscrn == 1 ? "prescreenOld" : "prescreenNew" };
@@ -821,8 +822,10 @@ void VS_CC nnedi3clCreate(const VSMap *in, VSMap *out, void *userData, VSCore *c
             options += " -D X_OFFSET=" + std::to_string(xOffset);
             options += " -D INPUT_WIDTH=" + std::to_string(inputWidth);
             options += " -D INPUT_HEIGHT=" + std::to_string(inputHeight);
-            options += " -D SCALE_ASIZE=" + std::to_string(scaleAsize);
-            options += " -D SCALE_QUAL=" + std::to_string(scaleQual);
+            std::snprintf(buf, 100, "%.20f", scaleAsize);
+            options += " -D SCALE_ASIZE=" + std::string{ buf };
+            std::snprintf(buf, 100, "%.20f", scaleQual);
+            options += " -D SCALE_QUAL=" + std::string{ buf };
             options += " -D PEAK=" + std::to_string(peak);
             if (!(d->dh || d->dw)) {
                 options += " -D Y_OFFSET=" + std::to_string(ydia - 1);
