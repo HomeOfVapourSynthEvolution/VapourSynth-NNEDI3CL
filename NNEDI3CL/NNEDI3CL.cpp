@@ -48,7 +48,98 @@ static constexpr int nnsTable[numNNS] = { 16, 32, 64, 128, 256 };
 static const char * source = BOOST_COMPUTE_STRINGIZE_SOURCE(
 static __constant sampler_t sampler = CLK_NORMALIZED_COORDS_FALSE | CLK_ADDRESS_NONE | CLK_FILTER_NEAREST;
 
-static float8 internalProcess(const __local float (* input)[INPUT_WIDTH], __read_only image1d_buffer_t weights) {
+static void elliott(float8 * data, const uint n) {
+    for (uint i = 0; i < n; i++)
+        data[i] = native_divide(data[i], 1.f + fabs(data[i]));
+}
+
+static void dotProd(const float8 * data, __constant float * weights, float8 * vals, const uint n, const uint len) {
+    for (uint i = 0; i < n; i++) {
+        float8 sum = 0.f;
+        for (uint j = 0; j < len; j++)
+            sum += data[j] * weights[mad24(i, len, j)];
+
+        vals[i] = sum + weights[mad24(n, len, i)];
+    }
+}
+
+static float8 prescreenOld(const __local float (* input)[INPUT_WIDTH], int8 * flag, __constant float * weights) {
+    float8 temp[12];
+
+    for (uint i = 0; i < 4; i++) {
+        float8 sum = 0.f;
+        uint j = 0;
+
+        for (uint y = 0; y < 4; y++) {
+            float8 pixel = vload8(0, input[y]);
+
+            for (uint x = 0; x < 12 - 1; x++) {
+                sum += pixel * weights[mad24(i, 48U, j++)];
+
+                pixel = (float8)(pixel.s1234, pixel.s567, input[y][8 + x]);
+            }
+
+            sum += pixel * weights[mad24(i, 48U, j++)];
+        }
+
+        temp[i] = sum + weights[4 * 48 + i];
+    }
+
+    const float8 t = temp[0];
+    elliott(temp, 4);
+    temp[0] = t;
+    dotProd(temp, weights + 4 * 49, temp + 4, 4, 4);
+    elliott(temp + 4, 4);
+    dotProd(temp, weights + 4 * 49 + 4 * 5, temp + 8, 4, 8);
+
+    *flag = (max(temp[10], temp[11]) <= max(temp[8], temp[9]));
+
+    return 0.59375f * (vload8(0, input[1] + 5) + vload8(0, input[2] + 5)) - 0.09375f * (vload8(0, input[0] + 5) + vload8(0, input[3] + 5));
+}
+
+static float8 prescreenNew(const __local float (* input)[INPUT_WIDTH], int8 * flag, __constant float * weights) {
+    __constant short * ws = (__constant short *)weights;
+    __constant float * wf = (__constant float *)&ws[4 * 64];
+    float temp1[8], temp2[8];
+
+    for (uint i = 0; i < 4; i++) {
+        float sum1 = 0.f, sum2 = 0.f;
+        uint j = 0;
+
+        for (uint y = 0; y < 4; y++) {
+            for (uint x = 0; x < 16; x++) {
+                sum1 += input[y][x] * ws[(i << 3) + ((j >> 3) << 5) + (j & 7)];
+                sum2 += input[y][4 + x] * ws[(i << 3) + ((j >> 3) << 5) + (j & 7)];
+                j++;
+            }
+        }
+
+        const float t1 = sum1 * wf[i] + wf[4 + i];
+        const float t2 = sum2 * wf[i] + wf[4 + i];
+        temp1[i] = native_divide(t1, 1.f + fabs(t1));
+        temp2[i] = native_divide(t2, 1.f + fabs(t2));
+    }
+
+    for (uint i = 0; i < 4; i++) {
+        float sum1 = 0.f, sum2 = 0.f;
+        for (uint j = 0; j < 4; j++) {
+            sum1 += temp1[j] * wf[8 + i + (j << 2)];
+            sum2 += temp2[j] * wf[8 + i + (j << 2)];
+        }
+
+        temp1[4 + i] = sum1 + wf[8 + 16 + i];
+        temp2[4 + i] = sum2 + wf[8 + 16 + i];
+    }
+
+    for (uint i = 0; i < 4; i++) {
+        ((int *)flag)[i] = select(0, -1, temp1[4 + i] > 0.f);
+        ((int *)flag)[4 + i] = select(0, -1, temp2[4 + i] > 0.f);
+    }
+
+    return 0.59375f * (vload8(0, input[1] + 7) + vload8(0, input[2] + 7)) - 0.09375f * (vload8(0, input[0] + 7) + vload8(0, input[3] + 7));
+}
+
+static float8 predict(const __local float (* input)[INPUT_WIDTH], __read_only image1d_buffer_t weights) {
     float8 sum = 0.f, sumsq = 0.f;
 
     for (uint y = 0; y < YDIA; y++) {
@@ -67,7 +158,7 @@ static float8 internalProcess(const __local float (* input)[INPUT_WIDTH], __read
 
     const float8 mstd0 = sum * SCALE_ASIZE;
     float8 mstd1 = sumsq * SCALE_ASIZE - mstd0 * mstd0;
-    const int8 cond = mstd1 <= FLT_EPSILON;
+    const int8 cond = (mstd1 <= FLT_EPSILON);
     mstd1 = select(native_sqrt(mstd1), 0.f, cond);
     const float8 mstd2 = select(native_recip(mstd1), 0.f, cond);
 
@@ -109,7 +200,7 @@ static float8 internalProcess(const __local float (* input)[INPUT_WIDTH], __read
 }
 
 __kernel __attribute__((reqd_work_group_size(8, 8, 1)))
-void process_uint(__read_only image2d_t src, __write_only image2d_t dst, __read_only image1d_buffer_t weights,
+void process_uint(__read_only image2d_t src, __write_only image2d_t dst, __constant float * weights0, __read_only image1d_buffer_t weights1,
                   const int srcWidth, const int srcHeight, const int dstWidth, const int dstHeight, const int field_n, const int off, const int swap) {
     const int globalX = get_global_id(0);
     const int globalY = get_global_id(1);
@@ -124,14 +215,14 @@ void process_uint(__read_only image2d_t src, __write_only image2d_t dst, __read_
 
     __local float input[INPUT_HEIGHT][INPUT_WIDTH];
 
-    for (uint y = localY, j = 0; y < INPUT_HEIGHT; y += 8, j++) {
+    for (int y = localY, j = 0; y < INPUT_HEIGHT; y += 8, j++) {
         int srcY = _srcY + Y_STRIDE * j;
         if (srcY < 0)
             srcY = abs(srcY) + Y_STEP * off;
         else if (srcY >= srcHeight)
             srcY = 2 * srcHeight - srcY - 2 * Y_STEP;
 
-        for (uint x = localX, i = 0; x < INPUT_WIDTH; x += 8, i++) {
+        for (int x = localX, i = 0; x < INPUT_WIDTH; x += 8, i++) {
             int srcX = abs(_srcX + 8 * i);
             if (srcX >= srcWidth)
                 srcX = 2 * srcWidth - srcX - 2;
@@ -142,21 +233,24 @@ void process_uint(__read_only image2d_t src, __write_only image2d_t dst, __read_
 
     barrier(CLK_LOCAL_MEM_FENCE);
 
-    const float8 mstd3 = internalProcess((const __local float (*)[INPUT_WIDTH])&input[localY][8 * localX], weights);
+    int8 flag;
+    float8 output = PRESCREEN((const __local float (*)[INPUT_WIDTH])&input[YDIAD2M1 - 1 + localY][XDIAD2M1 - PSCRN_OFFSET + 8 * localX], &flag, weights0);
+    if (!all(flag))
+        output = predict((const __local float (*)[INPUT_WIDTH])&input[localY][X_OFFSET + 8 * localX], weights1);
 
     if (dstY < dstHeight) {
         for (uint i = 0; i < 8; i++) {
             const int dstX = _dstX + i;
             if (dstX < dstWidth) {
                 write_imageui(dst, select((int2)(dstX, dstYCopy), (int2)(dstYCopy, dstX), (int2)swap), input[YDIAD2M1 + localY + off][XDIAD2M1 + 8 * localX + i]);
-                write_imageui(dst, select((int2)(dstX, dstY), (int2)(dstY, dstX), (int2)swap), clamp((int)(((const float *)&mstd3)[i] + 0.5f), 0, PEAK));
+                write_imageui(dst, select((int2)(dstX, dstY), (int2)(dstY, dstX), (int2)swap), clamp((int)(((const float *)&output)[i] + 0.5f), 0, PEAK));
             }
         }
     }
 }
 
 __kernel __attribute__((reqd_work_group_size(8, 8, 1)))
-void process_float(__read_only image2d_t src, __write_only image2d_t dst, __read_only image1d_buffer_t weights,
+void process_float(__read_only image2d_t src, __write_only image2d_t dst, __constant float * weights0, __read_only image1d_buffer_t weights1,
                    const int srcWidth, const int srcHeight, const int dstWidth, const int dstHeight, const int field_n, const int off, const int swap) {
     const int globalX = get_global_id(0);
     const int globalY = get_global_id(1);
@@ -171,14 +265,14 @@ void process_float(__read_only image2d_t src, __write_only image2d_t dst, __read
 
     __local float input[INPUT_HEIGHT][INPUT_WIDTH];
 
-    for (uint y = localY, j = 0; y < INPUT_HEIGHT; y += 8, j++) {
+    for (int y = localY, j = 0; y < INPUT_HEIGHT; y += 8, j++) {
         int srcY = _srcY + Y_STRIDE * j;
         if (srcY < 0)
             srcY = abs(srcY) + Y_STEP * off;
         else if (srcY >= srcHeight)
             srcY = 2 * srcHeight - srcY - 2 * Y_STEP;
 
-        for (uint x = localX, i = 0; x < INPUT_WIDTH; x += 8, i++) {
+        for (int x = localX, i = 0; x < INPUT_WIDTH; x += 8, i++) {
             int srcX = abs(_srcX + 8 * i);
             if (srcX >= srcWidth)
                 srcX = 2 * srcWidth - srcX - 2;
@@ -189,14 +283,17 @@ void process_float(__read_only image2d_t src, __write_only image2d_t dst, __read
 
     barrier(CLK_LOCAL_MEM_FENCE);
 
-    const float8 mstd3 = internalProcess((const __local float (*)[INPUT_WIDTH])&input[localY][8 * localX], weights);
+    int8 flag;
+    float8 output = PRESCREEN((const __local float (*)[INPUT_WIDTH])&input[YDIAD2M1 - 1 + localY][XDIAD2M1 - PSCRN_OFFSET + 8 * localX], &flag, weights0);
+    if (!all(flag))
+        output = predict((const __local float (*)[INPUT_WIDTH])&input[localY][X_OFFSET + 8 * localX], weights1);
 
     if (dstY < dstHeight) {
         for (uint i = 0; i < 8; i++) {
             const int dstX = _dstX + i;
             if (dstX < dstWidth) {
                 write_imagef(dst, select((int2)(dstX, dstYCopy), (int2)(dstYCopy, dstX), (int2)swap), input[YDIAD2M1 + localY + off][XDIAD2M1 + 8 * localX + i]);
-                write_imagef(dst, select((int2)(dstX, dstY), (int2)(dstY, dstX), (int2)swap), ((const float *)&mstd3)[i]);
+                write_imagef(dst, select((int2)(dstX, dstY), (int2)(dstY, dstX), (int2)swap), ((const float *)&output)[i]);
             }
         }
     }
@@ -211,9 +308,13 @@ struct NNEDI3CLData {
     compute::command_queue queue;
     compute::kernel kernel;
     compute::image2d src, dst, tmp;
-    compute::buffer weightsBuffer;
-    cl_mem weights;
+    compute::buffer weights0, weights1Buffer;
+    cl_mem weights1;
 };
+
+static inline int roundds(const double f) {
+    return (f - std::floor(f) >= 0.5) ? std::min(static_cast<int>(std::ceil(f)), 32767) : std::max(static_cast<int>(std::floor(f)), -32768);
+}
 
 template<typename T>
 static void process(const VSFrameRef * src, VSFrameRef * dst, const int field_n, NNEDI3CLData * d, const VSAPI * vsapi) {
@@ -232,20 +333,20 @@ static void process(const VSFrameRef * src, VSFrameRef * dst, const int field_n,
 
             if (d->dh && d->dw) {
                 size_t globalWorkSize[] = { static_cast<size_t>(((srcHeight + 7) / 8 + 7) & -8), static_cast<size_t>((dstWidth / 2 + 7) & -8) };
-                d->kernel.set_args(d->src, d->tmp, d->weights, srcHeight, srcWidth, srcHeight, dstWidth, field_n, 1 - field_n, -1);
+                d->kernel.set_args(d->src, d->tmp, d->weights0, d->weights1, srcHeight, srcWidth, srcHeight, dstWidth, field_n, 1 - field_n, -1);
                 d->queue.enqueue_nd_range_kernel(d->kernel, 2, nullptr, globalWorkSize, localWorkSize);
 
                 globalWorkSize[0] = static_cast<size_t>(((dstWidth + 7) / 8 + 7) & -8);
                 globalWorkSize[1] = static_cast<size_t>((dstHeight / 2 + 7) & -8);
-                d->kernel.set_args(d->tmp, d->dst, d->weights, dstWidth, srcHeight, dstWidth, dstHeight, field_n, 1 - field_n, 0);
+                d->kernel.set_args(d->tmp, d->dst, d->weights0, d->weights1, dstWidth, srcHeight, dstWidth, dstHeight, field_n, 1 - field_n, 0);
                 d->queue.enqueue_nd_range_kernel(d->kernel, 2, nullptr, globalWorkSize, localWorkSize);
             } else if (d->dw) {
-                size_t globalWorkSize[] = { static_cast<size_t>(((dstHeight + 7) / 8 + 7) & -8), static_cast<size_t>((dstWidth / 2 + 7) & -8) };
-                d->kernel.set_args(d->src, d->dst, d->weights, srcHeight, srcWidth, dstHeight, dstWidth, field_n, 1 - field_n, -1);
+                const size_t globalWorkSize[] = { static_cast<size_t>(((dstHeight + 7) / 8 + 7) & -8), static_cast<size_t>((dstWidth / 2 + 7) & -8) };
+                d->kernel.set_args(d->src, d->dst, d->weights0, d->weights1, srcHeight, srcWidth, dstHeight, dstWidth, field_n, 1 - field_n, -1);
                 d->queue.enqueue_nd_range_kernel(d->kernel, 2, nullptr, globalWorkSize, localWorkSize);
             } else {
                 const size_t globalWorkSize[] = { static_cast<size_t>(((dstWidth + 7) / 8 + 7) & -8), static_cast<size_t>((dstHeight / 2 + 7) & -8) };
-                d->kernel.set_args(d->src, d->dst, d->weights, srcWidth, srcHeight, dstWidth, dstHeight, field_n, 1 - field_n, 0);
+                d->kernel.set_args(d->src, d->dst, d->weights0, d->weights1, srcWidth, srcHeight, dstWidth, dstHeight, field_n, 1 - field_n, 0);
                 d->queue.enqueue_nd_range_kernel(d->kernel, 2, nullptr, globalWorkSize, localWorkSize);
             }
 
@@ -331,7 +432,7 @@ static void VS_CC nnedi3clFree(void *instanceData, VSCore *core, const VSAPI *vs
 
     vsapi->freeNode(d->node);
 
-    clReleaseMemObject(d->weights);
+    clReleaseMemObject(d->weights1);
 
     delete d;
 }
@@ -357,7 +458,7 @@ void VS_CC nnedi3clCreate(const VSMap *in, VSMap *out, void *userData, VSCore *c
         const int m = vsapi->propNumElements(in, "planes");
 
         for (int i = 0; i < 3; i++)
-            d->process[i] = m <= 0;
+            d->process[i] = (m <= 0);
 
         for (int i = 0; i < m; i++) {
             const int n = int64ToIntS(vsapi->propGetInt(in, "planes", i, nullptr));
@@ -384,6 +485,10 @@ void VS_CC nnedi3clCreate(const VSMap *in, VSMap *out, void *userData, VSCore *c
             qual = 1;
 
         const int etype = int64ToIntS(vsapi->propGetInt(in, "etype", 0, &err));
+
+        int pscrn = int64ToIntS(vsapi->propGetInt(in, "pscrn", 0, &err));
+        if (err)
+            pscrn = (d->vi.format->sampleType == stInteger) ? 2 : 1;
 
         int device = int64ToIntS(vsapi->propGetInt(in, "device", 0, &err));
         if (err)
@@ -412,6 +517,14 @@ void VS_CC nnedi3clCreate(const VSMap *in, VSMap *out, void *userData, VSCore *c
 
         if (etype < 0 || etype > 1)
             throw std::string{ "etype must be 0 or 1" };
+
+        if (d->vi.format->sampleType == stInteger) {
+            if (pscrn < 1 || pscrn > 2)
+                throw std::string{ "pscrn must be 1 or 2" };
+        } else {
+            if (pscrn != 1)
+                throw std::string{ "pscrn must be 1 for float input" };
+        }
 
         if (device >= static_cast<int>(compute::system::device_count()))
             throw std::string{ "device index out of range" };
@@ -522,12 +635,75 @@ void VS_CC nnedi3clCreate(const VSMap *in, VSMap *out, void *userData, VSCore *c
             }
         }
 
-        float * weights = new float[dims1 * 2];
+        float * weights0 = new float[std::max(dims0, dims0new)];
+        float * weights1 = new float[dims1 * 2];
+
+        // Adjust prescreener weights
+        if (pscrn == 2) { // using new prescreener
+            int * offt = reinterpret_cast<int *>(calloc(4 * 64, sizeof(int)));
+            for (int j = 0; j < 4; j++) {
+                for (int k = 0; k < 64; k++)
+                    offt[j * 64 + k] = ((k >> 3) << 5) + ((j & 3) << 3) + (k & 7);
+            }
+
+            const float * bdw = bdata + dims0 + dims0new * (pscrn - 2);
+            short * ws = reinterpret_cast<short *>(weights0);
+            float * wf = reinterpret_cast<float *>(&ws[4 * 64]);
+            double mean[4] = { 0., 0., 0., 0. };
+
+            // Calculate mean weight of each first layer neuron
+            for (int j = 0; j < 4; j++) {
+                double cmean = 0.;
+                for (int k = 0; k < 64; k++)
+                    cmean += bdw[offt[j * 64 + k]];
+
+                mean[j] = cmean / 64.;
+            }
+
+            const double half = peak / 2.;
+
+            // Factor mean removal and 1.0/half scaling into first layer weights. scale to int16 range
+            for (int j = 0; j < 4; j++) {
+                double mval = 0.;
+                for (int k = 0; k < 64; k++)
+                    mval = std::max(mval, std::abs((bdw[offt[j * 64 + k]] - mean[j]) / half));
+
+                const double scale = 32767. / mval;
+                for (int k = 0; k < 64; k++)
+                    ws[offt[j * 64 + k]] = roundds(((bdw[offt[j * 64 + k]] - mean[j]) / half) * scale);
+
+                wf[j] = static_cast<float>(mval / 32767.);
+            }
+
+            memcpy(wf + 4, bdw + 4 * 64, (dims0new - 4 * 64) * sizeof(float));
+            free(offt);
+        } else { // using old prescreener
+            double mean[4] = { 0., 0., 0., 0. };
+
+            // Calculate mean weight of each first layer neuron
+            for (int j = 0; j < 4; j++) {
+                double cmean = 0.;
+                for (int k = 0; k < 48; k++)
+                    cmean += bdata[j * 48 + k];
+
+                mean[j] = cmean / 48.;
+            }
+
+            const double half = (d->vi.format->sampleType == stInteger ? peak : 1.) / 2.;
+
+            // Factor mean removal and 1.0/half scaling into first layer weights
+            for (int j = 0; j < 4; j++) {
+                for (int k = 0; k < 48; k++)
+                    weights0[j * 48 + k] = static_cast<float>((bdata[j * 48 + k] - mean[j]) / half);
+            }
+
+            memcpy(weights0 + 4 * 48, bdata + 4 * 48, (dims0 - 4 * 48) * sizeof(float));
+        }
 
         // Adjust prediction weights
         for (int i = 0; i < 2; i++) {
             const float * bdataT = bdata + dims0 + dims0new * 3 + dims1tsize * etype + dims1offset + i * dims1;
-            float * weightsT = weights + i * dims1;
+            float * weightsT = weights1 + i * dims1;
             const int nnst = nnsTable[nns];
             const int asize = xdiaTable[nsize] * ydiaTable[nsize];
             const int boff = nnst * 2 * asize;
@@ -568,9 +744,10 @@ void VS_CC nnedi3clCreate(const VSMap *in, VSMap *out, void *userData, VSCore *c
         const int xdia = xdiaTable[nsize];
         const int ydia = ydiaTable[nsize];
         const int asize = xdiaTable[nsize] * ydiaTable[nsize];
-        const int xdiad2m1 = xdia / 2 - 1;
+        const int xdiad2m1 = std::max(xdia, (pscrn == 1) ? 12 : 16) / 2 - 1;
         const int ydiad2m1 = ydia / 2 - 1;
-        const int inputWidth = xdia + 64 - 1;
+        const int xOffset = (xdia == 8) ? (pscrn == 1 ? 2 : 4) : 0;
+        const int inputWidth = std::max(xdia, (pscrn == 1) ? 12 : 16) + 64 - 1;
         const int inputHeight = ydia + 8 - 1;
         const float scaleAsize = 1.f / asize;
         const float scaleQual = 1.f / qual;
@@ -581,8 +758,10 @@ void VS_CC nnedi3clCreate(const VSMap *in, VSMap *out, void *userData, VSCore *c
         const compute::context ctx{ gpu };
         d->queue = compute::command_queue{ ctx, gpu };
 
-        d->weightsBuffer = compute::buffer{ ctx, dims1 * 2 * sizeof(cl_float), CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR | CL_MEM_HOST_NO_ACCESS, weights };
-        delete[] weights;
+        d->weights0 = compute::buffer{ ctx, std::max(dims0, dims0new) * sizeof(cl_float), CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR | CL_MEM_HOST_NO_ACCESS, weights0 };
+        d->weights1Buffer = compute::buffer{ ctx, dims1 * 2 * sizeof(cl_float), CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR | CL_MEM_HOST_NO_ACCESS, weights1 };
+        delete[] weights0;
+        delete[] weights1;
 
         if (!!vsapi->propGetInt(in, "info", 0, &err)) {
             std::string text{ "=== Device Info ===\n" };
@@ -629,6 +808,8 @@ void VS_CC nnedi3clCreate(const VSMap *in, VSMap *out, void *userData, VSCore *c
             std::setlocale(LC_ALL, "C");
             std::string options{ "-cl-single-precision-constant -cl-denorms-are-zero -cl-fast-relaxed-math -Werror" };
             options += " -D QUAL=" + std::to_string(qual);
+            options += " -D PRESCREEN=" + std::string{ pscrn == 1 ? "prescreenOld" : "prescreenNew" };
+            options += " -D PSCRN_OFFSET=" + std::to_string(pscrn == 1 ? 5 : 7);
             options += " -D DIMS1=" + std::to_string(dims1);
             options += " -D NNS=" + std::to_string(nnsTable[nns]);
             options += " -D NNS2=" + std::to_string(nnsTable[nns] * 2);
@@ -637,6 +818,7 @@ void VS_CC nnedi3clCreate(const VSMap *in, VSMap *out, void *userData, VSCore *c
             options += " -D ASIZE=" + std::to_string(asize);
             options += " -D XDIAD2M1=" + std::to_string(xdiad2m1);
             options += " -D YDIAD2M1=" + std::to_string(ydiad2m1);
+            options += " -D X_OFFSET=" + std::to_string(xOffset);
             options += " -D INPUT_WIDTH=" + std::to_string(inputWidth);
             options += " -D INPUT_HEIGHT=" + std::to_string(inputHeight);
             options += " -D SCALE_ASIZE=" + std::to_string(scaleAsize);
@@ -689,9 +871,9 @@ void VS_CC nnedi3clCreate(const VSMap *in, VSMap *out, void *userData, VSCore *c
             desc.num_mip_levels = 0;
             desc.num_samples = 0;
 #ifdef BOOST_COMPUTE_CL_VERSION_2_0
-            desc.mem_object = d->weightsBuffer.get();
+            desc.mem_object = d->weights1Buffer.get();
 #else
-            desc.buffer = d->weightsBuffer.get();
+            desc.buffer = d->weights1Buffer.get();
 #endif
 
             cl_int error = 0;
@@ -700,7 +882,7 @@ void VS_CC nnedi3clCreate(const VSMap *in, VSMap *out, void *userData, VSCore *c
             if (!mem)
                 BOOST_THROW_EXCEPTION(compute::opencl_error(error));
 
-            d->weights = mem;
+            d->weights1 = mem;
         }
     } catch (const std::string & error) {
         vsapi->setError(out, ("NNEDI3CL: " + error).c_str());
@@ -734,6 +916,7 @@ VS_EXTERNAL_API(void) VapourSynthPluginInit(VSConfigPlugin configFunc, VSRegiste
                  "nns:int:opt;"
                  "qual:int:opt;"
                  "etype:int:opt;"
+                 "pscrn:int:opt;"
                  "device:int:opt;"
                  "list_device:int:opt;"
                  "info:int:opt;",

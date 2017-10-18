@@ -11,7 +11,7 @@ Usage
 
 The file `nnedi3_weights.bin` is required. On Windows, it must be located in the same folder as `NNEDI3CL.dll`. Everywhere else it can be located either in the same folder as `libnnedi3cl.so`/`libnnedi3cl.dylib`, or in `$prefix/share/nnedi3/`. The build system installs it at the latter location automatically.
 
-    nnedi3cl.NNEDI3CL(clip, int field[, bint dh=False, bint dw=False, int[] planes, int nsize=6, int nns=1, int qual=1, int etype=0, int device=-1, bint list_device=False, bint info=False])
+    nnedi3cl.NNEDI3CL(clip, int field[, bint dh=False, bint dw=False, int[] planes, int nsize=6, int nns=1, int qual=1, int etype=0, int pscrn=2, int device=-1, bint list_device=False, bint info=False])
 
 * clip: Clip to process. Any planar format with either integer sample type of 8-16 bit depth or float sample type of 32 bit depth is supported.
 
@@ -48,6 +48,10 @@ The file `nnedi3_weights.bin` is required. On Windows, it must be located in the
 * etype: Controls which set of weights to use in the predictor nn.
   * 0 = weights trained to minimize absolute error
   * 1 = weights trained to minimize squared error
+
+* pscrn: Controls whether or not the prescreener neural network is used to decide which pixels should be processed by the predictor neural network and which can be handled by simple cubic interpolation. The prescreener is trained to know whether cubic interpolation will be sufficient for a pixel or whether it should be predicted by the predictor nn. The computational complexity of the prescreener nn is much less than that of the predictor nn. Since most pixels can be handled by cubic interpolation, using the prescreener generally results in much faster processing. The prescreener is pretty accurate, so the difference between using it and not using it is almost always unnoticeable. The new prescreener is faster than the old one, and it also causes more pixels to be handled by cubic interpolation.
+  * 1 = old prescreener
+  * 2 = new prescreener (unavailable with float input)
 
 * device: Sets target OpenCL device. Use `list_device` to get the index of the available devices. By default the default device is selected.
 
