@@ -25,6 +25,8 @@
 #include <cstdio>
 #include <memory>
 #include <string>
+#include <thread>
+#include <unordered_map>
 
 #ifdef _WIN32
 #include <codecvt>
@@ -34,6 +36,8 @@
 #include <VapourSynth.h>
 #include <VSHelper.h>
 
+#define BOOST_COMPUTE_HAVE_THREAD_LOCAL
+#define BOOST_COMPUTE_THREAD_SAFE
 #include <boost/compute/core.hpp>
 #include <boost/compute/utility/dim.hpp>
 #include <boost/compute/utility/source.hpp>
@@ -305,11 +309,15 @@ struct NNEDI3CLData {
     VSVideoInfo vi;
     int field;
     bool dh, dw, process[3];
-    compute::command_queue queue;
-    compute::kernel kernel;
-    compute::image2d src, dst, tmp;
+    compute::device gpu;
+    compute::context ctx;
+    compute::program program;
     compute::buffer weights0, weights1Buffer;
     cl_mem weights1;
+    cl_image_format clImageFormat;
+    std::unordered_map<std::thread::id, compute::command_queue> queue;
+    std::unordered_map<std::thread::id, compute::kernel> kernel;
+    std::unordered_map<std::thread::id, compute::image2d> src, dst, tmp;
 };
 
 static inline int roundds(const double f) {
@@ -317,7 +325,7 @@ static inline int roundds(const double f) {
 }
 
 template<typename T>
-static void process(const VSFrameRef * src, VSFrameRef * dst, const int field_n, NNEDI3CLData * d, const VSAPI * vsapi) {
+static void process(const VSFrameRef * src, VSFrameRef * dst, const int field_n, const NNEDI3CLData * d, const VSAPI * vsapi) {
     for (int plane = 0; plane < d->vi.format->numPlanes; plane++) {
         if (d->process[plane]) {
             const int srcWidth = vsapi->getFrameWidth(src, plane);
@@ -327,30 +335,37 @@ static void process(const VSFrameRef * src, VSFrameRef * dst, const int field_n,
             const T * srcp = reinterpret_cast<const T *>(vsapi->getReadPtr(src, plane));
             T * VS_RESTRICT dstp = reinterpret_cast<T *>(vsapi->getWritePtr(dst, plane));
 
+            const auto threadId = std::this_thread::get_id();
+            auto queue = d->queue.at(threadId);
+            auto kernel = d->kernel.at(threadId);
+            auto srcImage = d->src.at(threadId);
+            auto dstImage = d->dst.at(threadId);
+            auto tmpImage = d->tmp.at(threadId);
+
             constexpr size_t localWorkSize[] = { 8, 8 };
 
-            d->queue.enqueue_write_image(d->src, compute::dim(0, 0), compute::dim(srcWidth, srcHeight), srcp, vsapi->getStride(src, plane));
+            queue.enqueue_write_image(srcImage, compute::dim(0, 0), compute::dim(srcWidth, srcHeight), srcp, vsapi->getStride(src, plane));
 
             if (d->dh && d->dw) {
                 size_t globalWorkSize[] = { static_cast<size_t>(((srcHeight + 7) / 8 + 7) & -8), static_cast<size_t>((dstWidth / 2 + 7) & -8) };
-                d->kernel.set_args(d->src, d->tmp, d->weights0, d->weights1, srcHeight, srcWidth, srcHeight, dstWidth, field_n, 1 - field_n, -1);
-                d->queue.enqueue_nd_range_kernel(d->kernel, 2, nullptr, globalWorkSize, localWorkSize);
+                kernel.set_args(srcImage, tmpImage, d->weights0, d->weights1, srcHeight, srcWidth, srcHeight, dstWidth, field_n, 1 - field_n, -1);
+                queue.enqueue_nd_range_kernel(kernel, 2, nullptr, globalWorkSize, localWorkSize);
 
                 globalWorkSize[0] = static_cast<size_t>(((dstWidth + 7) / 8 + 7) & -8);
                 globalWorkSize[1] = static_cast<size_t>((dstHeight / 2 + 7) & -8);
-                d->kernel.set_args(d->tmp, d->dst, d->weights0, d->weights1, dstWidth, srcHeight, dstWidth, dstHeight, field_n, 1 - field_n, 0);
-                d->queue.enqueue_nd_range_kernel(d->kernel, 2, nullptr, globalWorkSize, localWorkSize);
+                kernel.set_args(tmpImage, dstImage, d->weights0, d->weights1, dstWidth, srcHeight, dstWidth, dstHeight, field_n, 1 - field_n, 0);
+                queue.enqueue_nd_range_kernel(kernel, 2, nullptr, globalWorkSize, localWorkSize);
             } else if (d->dw) {
                 const size_t globalWorkSize[] = { static_cast<size_t>(((dstHeight + 7) / 8 + 7) & -8), static_cast<size_t>((dstWidth / 2 + 7) & -8) };
-                d->kernel.set_args(d->src, d->dst, d->weights0, d->weights1, srcHeight, srcWidth, dstHeight, dstWidth, field_n, 1 - field_n, -1);
-                d->queue.enqueue_nd_range_kernel(d->kernel, 2, nullptr, globalWorkSize, localWorkSize);
+                kernel.set_args(srcImage, dstImage, d->weights0, d->weights1, srcHeight, srcWidth, dstHeight, dstWidth, field_n, 1 - field_n, -1);
+                queue.enqueue_nd_range_kernel(kernel, 2, nullptr, globalWorkSize, localWorkSize);
             } else {
                 const size_t globalWorkSize[] = { static_cast<size_t>(((dstWidth + 7) / 8 + 7) & -8), static_cast<size_t>((dstHeight / 2 + 7) & -8) };
-                d->kernel.set_args(d->src, d->dst, d->weights0, d->weights1, srcWidth, srcHeight, dstWidth, dstHeight, field_n, 1 - field_n, 0);
-                d->queue.enqueue_nd_range_kernel(d->kernel, 2, nullptr, globalWorkSize, localWorkSize);
+                kernel.set_args(srcImage, dstImage, d->weights0, d->weights1, srcWidth, srcHeight, dstWidth, dstHeight, field_n, 1 - field_n, 0);
+                queue.enqueue_nd_range_kernel(kernel, 2, nullptr, globalWorkSize, localWorkSize);
             }
 
-            d->queue.enqueue_read_image(d->dst, compute::dim(0, 0), compute::dim(dstWidth, dstHeight), dstp, vsapi->getStride(dst, plane));
+            queue.enqueue_read_image(dstImage, compute::dim(0, 0), compute::dim(dstWidth, dstHeight), dstp, vsapi->getStride(dst, plane));
         }
     }
 }
@@ -366,6 +381,35 @@ static const VSFrameRef *VS_CC nnedi3clGetFrame(int n, int activationReason, voi
     if (activationReason == arInitial) {
         vsapi->requestFrameFilter(d->field > 1 ? n / 2 : n, d->node, frameCtx);
     } else if (activationReason == arAllFramesReady) {
+        try {
+            auto threadId = std::this_thread::get_id();
+
+            if (!d->queue.count(threadId))
+                d->queue.emplace(threadId, compute::command_queue{ d->ctx, d->gpu });
+
+            if (!d->kernel.count(threadId)) {
+                if (d->vi.format->sampleType == stInteger)
+                    d->kernel.emplace(threadId, d->program.create_kernel("process_uint"));
+                else
+                    d->kernel.emplace(threadId, d->program.create_kernel("process_float"));
+            }
+
+            if (!d->src.count(threadId))
+                d->src.emplace(threadId, compute::image2d{ d->ctx, static_cast<size_t>(vsapi->getVideoInfo(d->node)->width), static_cast<size_t>(vsapi->getVideoInfo(d->node)->height), compute::image_format{ d->clImageFormat }, CL_MEM_READ_ONLY | CL_MEM_HOST_WRITE_ONLY });
+
+            if (!d->dst.count(threadId))
+                d->dst.emplace(threadId, compute::image2d{ d->ctx, static_cast<size_t>(std::max(d->vi.width, d->vi.height)), static_cast<size_t>(std::max(d->vi.width, d->vi.height)), compute::image_format{ d->clImageFormat }, CL_MEM_READ_WRITE | CL_MEM_HOST_READ_ONLY });
+
+            if (!d->tmp.count(threadId))
+                d->tmp.emplace(threadId, compute::image2d{ d->ctx, static_cast<size_t>(std::max(d->vi.width, d->vi.height)), static_cast<size_t>(std::max(d->vi.width, d->vi.height)), compute::image_format{ d->clImageFormat }, CL_MEM_READ_WRITE | CL_MEM_HOST_NO_ACCESS });
+        } catch (const std::string & error) {
+            vsapi->setFilterError(("NNEDI3CL: " + error).c_str(), frameCtx);
+            return nullptr;
+        } catch (const compute::opencl_error & error) {
+            vsapi->setFilterError(("NNEDI3CL: " + error.error_string()).c_str(), frameCtx);
+            return nullptr;
+        }
+
         const VSFrameRef * src = vsapi->getFrameFilter(d->field > 1 ? n / 2 : n, d->node, frameCtx);
         const VSFrameRef * fr[] = { d->process[0] ? nullptr : src, d->process[1] ? nullptr : src, d->process[2] ? nullptr : src };
         const int pl[] = { 0, 1, 2 };
@@ -752,34 +796,33 @@ void VS_CC nnedi3clCreate(const VSMap *in, VSMap *out, void *userData, VSCore *c
         const float scaleAsize = 1.f / asize;
         const float scaleQual = 1.f / qual;
 
-        compute::device gpu = compute::system::default_device();
+        d->gpu = compute::system::default_device();
         if (device > -1)
-            gpu = compute::system::devices().at(device);
-        const compute::context ctx{ gpu };
-        d->queue = compute::command_queue{ ctx, gpu };
+            d->gpu = compute::system::devices().at(device);
+        d->ctx = compute::context{ d->gpu };
 
-        d->weights0 = compute::buffer{ ctx, std::max(dims0, dims0new) * sizeof(cl_float), CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR | CL_MEM_HOST_NO_ACCESS, weights0 };
-        d->weights1Buffer = compute::buffer{ ctx, dims1 * 2 * sizeof(cl_float), CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR | CL_MEM_HOST_NO_ACCESS, weights1 };
+        d->weights0 = compute::buffer{ d->ctx, std::max(dims0, dims0new) * sizeof(cl_float), CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR | CL_MEM_HOST_NO_ACCESS, weights0 };
+        d->weights1Buffer = compute::buffer{ d->ctx, dims1 * 2 * sizeof(cl_float), CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR | CL_MEM_HOST_NO_ACCESS, weights1 };
         delete[] weights0;
         delete[] weights1;
 
         if (!!vsapi->propGetInt(in, "info", 0, &err)) {
             std::string text{ "=== Device Info ===\n" };
-            text += "Name: " + gpu.get_info<CL_DEVICE_NAME>() + "\n";
-            text += "Vendor: " + gpu.get_info<CL_DEVICE_VENDOR>() + "\n";
-            text += "Profile: " + gpu.get_info<CL_DEVICE_PROFILE>() + "\n";
-            text += "Version: " + gpu.get_info<CL_DEVICE_VERSION>() + "\n";
-            text += "Global Memory Size: " + std::to_string(gpu.get_info<CL_DEVICE_GLOBAL_MEM_SIZE>() / 1024 / 1024) + " MB\n";
-            text += "Local Memory Size: " + std::to_string(gpu.get_info<CL_DEVICE_LOCAL_MEM_SIZE>() / 1024) + " KB\n";
-            text += "Local Memory Type: " + std::string{ gpu.get_info<CL_DEVICE_LOCAL_MEM_TYPE>() == CL_LOCAL ? "CL_LOCAL" : "CL_GLOBAL" } +"\n";
-            text += "Image Support: " + std::string{ gpu.get_info<CL_DEVICE_IMAGE_SUPPORT>() ? "CL_TRUE" : "CL_FALSE" } +"\n";
-            text += "1D Image Max Buffer Size: " + std::to_string(gpu.get_info<size_t>(CL_DEVICE_IMAGE_MAX_BUFFER_SIZE)) + "\n";
-            text += "2D Image Max Width: " + std::to_string(gpu.get_info<CL_DEVICE_IMAGE2D_MAX_WIDTH>()) + "\n";
-            text += "2D Image Max Height: " + std::to_string(gpu.get_info<CL_DEVICE_IMAGE2D_MAX_HEIGHT>()) + "\n";
-            text += "Max Constant Arguments: " + std::to_string(gpu.get_info<CL_DEVICE_MAX_CONSTANT_ARGS>()) + "\n";
-            text += "Max Constant Buffer Size: " + std::to_string(gpu.get_info<CL_DEVICE_MAX_CONSTANT_BUFFER_SIZE>() / 1024) + " KB\n";
-            text += "Max Work-group Size: " + std::to_string(gpu.get_info<CL_DEVICE_MAX_WORK_GROUP_SIZE>()) + "\n";
-            const auto MAX_WORK_ITEM_SIZES = gpu.get_info<CL_DEVICE_MAX_WORK_ITEM_SIZES>();
+            text += "Name: " + d->gpu.get_info<CL_DEVICE_NAME>() + "\n";
+            text += "Vendor: " + d->gpu.get_info<CL_DEVICE_VENDOR>() + "\n";
+            text += "Profile: " + d->gpu.get_info<CL_DEVICE_PROFILE>() + "\n";
+            text += "Version: " + d->gpu.get_info<CL_DEVICE_VERSION>() + "\n";
+            text += "Global Memory Size: " + std::to_string(d->gpu.get_info<CL_DEVICE_GLOBAL_MEM_SIZE>() / 1024 / 1024) + " MB\n";
+            text += "Local Memory Size: " + std::to_string(d->gpu.get_info<CL_DEVICE_LOCAL_MEM_SIZE>() / 1024) + " KB\n";
+            text += "Local Memory Type: " + std::string{ d->gpu.get_info<CL_DEVICE_LOCAL_MEM_TYPE>() == CL_LOCAL ? "CL_LOCAL" : "CL_GLOBAL" } +"\n";
+            text += "Image Support: " + std::string{ d->gpu.get_info<CL_DEVICE_IMAGE_SUPPORT>() ? "CL_TRUE" : "CL_FALSE" } +"\n";
+            text += "1D Image Max Buffer Size: " + std::to_string(d->gpu.get_info<size_t>(CL_DEVICE_IMAGE_MAX_BUFFER_SIZE)) + "\n";
+            text += "2D Image Max Width: " + std::to_string(d->gpu.get_info<CL_DEVICE_IMAGE2D_MAX_WIDTH>()) + "\n";
+            text += "2D Image Max Height: " + std::to_string(d->gpu.get_info<CL_DEVICE_IMAGE2D_MAX_HEIGHT>()) + "\n";
+            text += "Max Constant Arguments: " + std::to_string(d->gpu.get_info<CL_DEVICE_MAX_CONSTANT_ARGS>()) + "\n";
+            text += "Max Constant Buffer Size: " + std::to_string(d->gpu.get_info<CL_DEVICE_MAX_CONSTANT_BUFFER_SIZE>() / 1024) + " KB\n";
+            text += "Max Work-group Size: " + std::to_string(d->gpu.get_info<CL_DEVICE_MAX_WORK_GROUP_SIZE>()) + "\n";
+            const auto MAX_WORK_ITEM_SIZES = d->gpu.get_info<CL_DEVICE_MAX_WORK_ITEM_SIZES>();
             text += "Max Work-item Sizes: (" + std::to_string(MAX_WORK_ITEM_SIZES[0]) + ", " + std::to_string(MAX_WORK_ITEM_SIZES[1]) + ", " + std::to_string(MAX_WORK_ITEM_SIZES[2]) + ")";
 
             VSMap * args = vsapi->createMap();
@@ -803,7 +846,7 @@ void VS_CC nnedi3clCreate(const VSMap *in, VSMap *out, void *userData, VSCore *c
             return;
         }
 
-        compute::program program = compute::program::create_with_source(source, ctx);
+        d->program = compute::program::create_with_source(source, d->ctx);
         try {
             std::setlocale(LC_ALL, "C");
             char buf[100];
@@ -837,28 +880,17 @@ void VS_CC nnedi3clCreate(const VSMap *in, VSMap *out, void *userData, VSCore *c
                 options += " -D Y_STRIDE=" + std::to_string(8);
             }
             std::setlocale(LC_ALL, "");
-            program.build(options);
+            d->program.build(options);
         } catch (const compute::opencl_error & error) {
-            throw error.error_string() + "\n" + program.build_log();
+            throw error.error_string() + "\n" + d->program.build_log();
         }
 
-        if (d->vi.format->sampleType == stInteger)
-            d->kernel = program.create_kernel("process_uint");
-        else
-            d->kernel = program.create_kernel("process_float");
-
-        cl_image_format clImageFormat;
         if (d->vi.format->bytesPerSample == 1)
-            clImageFormat = { CL_R, CL_UNSIGNED_INT8 };
+            d->clImageFormat = { CL_R, CL_UNSIGNED_INT8 };
         else if (d->vi.format->bytesPerSample == 2)
-            clImageFormat = { CL_R, CL_UNSIGNED_INT16 };
+            d->clImageFormat = { CL_R, CL_UNSIGNED_INT16 };
         else
-            clImageFormat = { CL_R, CL_FLOAT };
-        const compute::image_format imageFormat{ clImageFormat };
-
-        d->src = compute::image2d{ ctx, static_cast<size_t>(vsapi->getVideoInfo(d->node)->width), static_cast<size_t>(vsapi->getVideoInfo(d->node)->height), imageFormat, CL_MEM_READ_ONLY | CL_MEM_HOST_WRITE_ONLY };
-        d->dst = compute::image2d{ ctx, static_cast<size_t>(std::max(d->vi.width, d->vi.height)), static_cast<size_t>(std::max(d->vi.width, d->vi.height)), imageFormat, CL_MEM_READ_WRITE | CL_MEM_HOST_READ_ONLY };
-        d->tmp = compute::image2d{ ctx, static_cast<size_t>(std::max(d->vi.width, d->vi.height)), static_cast<size_t>(std::max(d->vi.width, d->vi.height)), imageFormat, CL_MEM_READ_WRITE | CL_MEM_HOST_NO_ACCESS };
+            d->clImageFormat = { CL_R, CL_FLOAT };
 
         {
             constexpr cl_image_format format = { CL_R, CL_FLOAT };
@@ -881,7 +913,7 @@ void VS_CC nnedi3clCreate(const VSMap *in, VSMap *out, void *userData, VSCore *c
 
             cl_int error = 0;
 
-            cl_mem mem = clCreateImage(ctx, 0, &format, &desc, nullptr, &error);
+            cl_mem mem = clCreateImage(d->ctx, 0, &format, &desc, nullptr, &error);
             if (!mem)
                 BOOST_THROW_EXCEPTION(compute::opencl_error(error));
 
@@ -901,7 +933,7 @@ void VS_CC nnedi3clCreate(const VSMap *in, VSMap *out, void *userData, VSCore *c
         return;
     }
 
-    vsapi->createFilter(in, out, "NNEDI3CL", nnedi3clInit, nnedi3clGetFrame, nnedi3clFree, fmParallelRequests, 0, d.release(), core);
+    vsapi->createFilter(in, out, "NNEDI3CL", nnedi3clInit, nnedi3clGetFrame, nnedi3clFree, fmParallel, 0, d.release(), core);
 }
 
 //////////////////////////////////////////
