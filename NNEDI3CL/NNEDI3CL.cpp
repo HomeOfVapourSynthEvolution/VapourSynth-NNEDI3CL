@@ -400,8 +400,12 @@ static const VSFrameRef *VS_CC nnedi3clGetFrame(int n, int activationReason, voi
             if (!d->dst.count(threadId))
                 d->dst.emplace(threadId, compute::image2d{ d->ctx, static_cast<size_t>(std::max(d->vi.width, d->vi.height)), static_cast<size_t>(std::max(d->vi.width, d->vi.height)), compute::image_format{ d->clImageFormat }, CL_MEM_READ_WRITE | CL_MEM_HOST_READ_ONLY });
 
-            if (!d->tmp.count(threadId))
-                d->tmp.emplace(threadId, compute::image2d{ d->ctx, static_cast<size_t>(std::max(d->vi.width, d->vi.height)), static_cast<size_t>(std::max(d->vi.width, d->vi.height)), compute::image_format{ d->clImageFormat }, CL_MEM_READ_WRITE | CL_MEM_HOST_NO_ACCESS });
+            if (!d->tmp.count(threadId)) {
+                if (d->dh && d->dw)
+                    d->tmp.emplace(threadId, compute::image2d{ d->ctx, static_cast<size_t>(std::max(d->vi.width, d->vi.height)), static_cast<size_t>(std::max(d->vi.width, d->vi.height)), compute::image_format{ d->clImageFormat }, CL_MEM_READ_WRITE | CL_MEM_HOST_NO_ACCESS });
+                else
+                    d->tmp.emplace(threadId, compute::image2d{});
+            }
         } catch (const std::string & error) {
             vsapi->setFilterError(("NNEDI3CL: " + error).c_str(), frameCtx);
             return nullptr;
@@ -616,6 +620,13 @@ void VS_CC nnedi3clCreate(const VSMap *in, VSMap *out, void *userData, VSCore *c
             d->vi.width *= 2;
 
         const int peak = (1 << d->vi.format->bitsPerSample) - 1;
+
+        const unsigned numThreads = vsapi->getCoreInfo(core)->numThreads;
+        d->queue.reserve(numThreads);
+        d->kernel.reserve(numThreads);
+        d->src.reserve(numThreads);
+        d->dst.reserve(numThreads);
+        d->tmp.reserve(numThreads);
 
         const std::string pluginPath{ vsapi->getPluginPath(vsapi->getPluginById("com.holywu.nnedi3cl", core)) };
         std::string weightsPath{ pluginPath.substr(0, pluginPath.find_last_of('/')) + "/nnedi3_weights.bin" };
