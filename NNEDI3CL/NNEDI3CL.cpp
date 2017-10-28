@@ -140,7 +140,7 @@ static float8 prescreenNew(const __local float (* input)[INPUT_WIDTH], int8 * fl
         ((int *)flag)[4 + i] = select(0, -1, temp2[4 + i] > 0.f);
     }
 
-    return 0.59375f * (vload8(0, input[1] + 7) + vload8(0, input[2] + 7)) - 0.09375f * (vload8(0, input[0] + 7) + vload8(0, input[3] + 7));
+    return 0.59375f * (vload8(0, input[1] + 6) + vload8(0, input[2] + 6)) - 0.09375f * (vload8(0, input[0] + 6) + vload8(0, input[3] + 6));
 }
 
 static float8 predict(const __local float (* input)[INPUT_WIDTH], __read_only image1d_buffer_t weights) {
@@ -864,7 +864,7 @@ void VS_CC nnedi3clCreate(const VSMap *in, VSMap *out, void *userData, VSCore *c
             std::string options{ "-cl-single-precision-constant -cl-denorms-are-zero -cl-fast-relaxed-math -Werror" };
             options += " -D QUAL=" + std::to_string(qual);
             options += " -D PRESCREEN=" + std::string{ pscrn == 1 ? "prescreenOld" : "prescreenNew" };
-            options += " -D PSCRN_OFFSET=" + std::to_string(pscrn == 1 ? 5 : 7);
+            options += " -D PSCRN_OFFSET=" + std::to_string(pscrn == 1 ? 5 : 6);
             options += " -D DIMS1=" + std::to_string(dims1);
             options += " -D NNS=" + std::to_string(nnsTable[nns]);
             options += " -D NNS2=" + std::to_string(nnsTable[nns] * 2);
