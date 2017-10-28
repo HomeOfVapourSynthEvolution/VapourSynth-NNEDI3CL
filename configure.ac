@@ -1,4 +1,4 @@
-AC_INIT([NNEDI3CL], [5], [https://github.com/HomeOfVapourSynthEvolution/VapourSynth-NNEDI3CL/issues], [NNEDI3CL], [https://github.com/HomeOfVapourSynthEvolution/VapourSynth-NNEDI3CL/])
+AC_INIT([NNEDI3CL], [6], [https://github.com/HomeOfVapourSynthEvolution/VapourSynth-NNEDI3CL/issues], [NNEDI3CL], [https://github.com/HomeOfVapourSynthEvolution/VapourSynth-NNEDI3CL/])
 
 : ${CXXFLAGS=""}
 

@@ -38,6 +38,7 @@
 
 #define BOOST_COMPUTE_HAVE_THREAD_LOCAL
 #define BOOST_COMPUTE_THREAD_SAFE
+#define BOOST_COMPUTE_USE_OFFLINE_CACHE
 #include <boost/compute/core.hpp>
 #include <boost/compute/utility/dim.hpp>
 #include <boost/compute/utility/source.hpp>
@@ -604,7 +605,6 @@ void VS_CC nnedi3clCreate(const VSMap *in, VSMap *out, void *userData, VSCore *c
             return;
         }
 
-        d->program = compute::program::create_with_source(source, d->ctx);
         try {
             std::setlocale(LC_ALL, "C");
             char buf[100];
@@ -638,7 +638,7 @@ void VS_CC nnedi3clCreate(const VSMap *in, VSMap *out, void *userData, VSCore *c
                 options += " -D Y_STRIDE=" + std::to_string(16);
             }
             std::setlocale(LC_ALL, "");
-            d->program.build(options);
+            d->program = compute::program::build_with_source(source, d->ctx, options);
         } catch (const compute::opencl_error & error) {
             throw error.error_string() + "\n" + d->program.build_log();
         }
