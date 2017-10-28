@@ -203,7 +203,7 @@ static float8 predict(const __local float (* input)[INPUT_WIDTH], __read_only im
     return mstd3 * SCALE_QUAL;
 }
 
-__kernel __attribute__((reqd_work_group_size(8, 8, 1)))
+__kernel __attribute__((reqd_work_group_size(4, 16, 1)))
 void process_uint(__read_only image2d_t src, __write_only image2d_t dst, __constant float * weights0, __read_only image1d_buffer_t weights1,
                   const int srcWidth, const int srcHeight, const int dstWidth, const int dstHeight, const int field_n, const int off, const int swap) {
     const int globalX = get_global_id(0);
@@ -211,7 +211,7 @@ void process_uint(__read_only image2d_t src, __write_only image2d_t dst, __const
     const int localX = get_local_id(0);
     const int localY = get_local_id(1);
 
-    const int _srcX = -XDIAD2M1 + 64 * get_group_id(0) + localX;
+    const int _srcX = -XDIAD2M1 + 32 * get_group_id(0) + localX;
     const int _srcY = field_n - Y_OFFSET + Y_STEP * globalY;
     const int _dstX = 8 * globalX;
     const int dstYCopy = off + 2 * globalY;
@@ -219,15 +219,15 @@ void process_uint(__read_only image2d_t src, __write_only image2d_t dst, __const
 
     __local float input[INPUT_HEIGHT][INPUT_WIDTH];
 
-    for (int y = localY, j = 0; y < INPUT_HEIGHT; y += 8, j++) {
+    for (int y = localY, j = 0; y < INPUT_HEIGHT; y += 16, j++) {
         int srcY = _srcY + Y_STRIDE * j;
         if (srcY < 0)
             srcY = abs(srcY) + Y_STEP * off;
         else if (srcY >= srcHeight)
             srcY = 2 * srcHeight - srcY - 2 * Y_STEP;
 
-        for (int x = localX, i = 0; x < INPUT_WIDTH; x += 8, i++) {
-            int srcX = abs(_srcX + 8 * i);
+        for (int x = localX, i = 0; x < INPUT_WIDTH; x += 4, i++) {
+            int srcX = abs(_srcX + 4 * i);
             if (srcX >= srcWidth)
                 srcX = 2 * srcWidth - srcX - 2;
 
@@ -253,7 +253,7 @@ void process_uint(__read_only image2d_t src, __write_only image2d_t dst, __const
     }
 }
 
-__kernel __attribute__((reqd_work_group_size(8, 8, 1)))
+__kernel __attribute__((reqd_work_group_size(4, 16, 1)))
 void process_float(__read_only image2d_t src, __write_only image2d_t dst, __constant float * weights0, __read_only image1d_buffer_t weights1,
                    const int srcWidth, const int srcHeight, const int dstWidth, const int dstHeight, const int field_n, const int off, const int swap) {
     const int globalX = get_global_id(0);
@@ -261,7 +261,7 @@ void process_float(__read_only image2d_t src, __write_only image2d_t dst, __cons
     const int localX = get_local_id(0);
     const int localY = get_local_id(1);
 
-    const int _srcX = -XDIAD2M1 + 64 * get_group_id(0) + localX;
+    const int _srcX = -XDIAD2M1 + 32 * get_group_id(0) + localX;
     const int _srcY = field_n - Y_OFFSET + Y_STEP * globalY;
     const int _dstX = 8 * globalX;
     const int dstYCopy = off + 2 * globalY;
@@ -269,15 +269,15 @@ void process_float(__read_only image2d_t src, __write_only image2d_t dst, __cons
 
     __local float input[INPUT_HEIGHT][INPUT_WIDTH];
 
-    for (int y = localY, j = 0; y < INPUT_HEIGHT; y += 8, j++) {
+    for (int y = localY, j = 0; y < INPUT_HEIGHT; y += 16, j++) {
         int srcY = _srcY + Y_STRIDE * j;
         if (srcY < 0)
             srcY = abs(srcY) + Y_STEP * off;
         else if (srcY >= srcHeight)
             srcY = 2 * srcHeight - srcY - 2 * Y_STEP;
 
-        for (int x = localX, i = 0; x < INPUT_WIDTH; x += 8, i++) {
-            int srcX = abs(_srcX + 8 * i);
+        for (int x = localX, i = 0; x < INPUT_WIDTH; x += 4, i++) {
+            int srcX = abs(_srcX + 4 * i);
             if (srcX >= srcWidth)
                 srcX = 2 * srcWidth - srcX - 2;
 
@@ -342,25 +342,25 @@ static void process(const VSFrameRef * src, VSFrameRef * dst, const int field_n,
             auto dstImage = d->dst.at(threadId);
             auto tmpImage = d->tmp.at(threadId);
 
-            constexpr size_t localWorkSize[] = { 8, 8 };
+            constexpr size_t localWorkSize[] = { 4, 16 };
 
             queue.enqueue_write_image(srcImage, compute::dim(0, 0), compute::dim(srcWidth, srcHeight), srcp, vsapi->getStride(src, plane));
 
             if (d->dh && d->dw) {
-                size_t globalWorkSize[] = { static_cast<size_t>(((srcHeight + 7) / 8 + 7) & -8), static_cast<size_t>((dstWidth / 2 + 7) & -8) };
+                size_t globalWorkSize[] = { static_cast<size_t>(((srcHeight + 7) / 8 + 3) & -4), static_cast<size_t>((dstWidth / 2 + 15) & -16) };
                 kernel.set_args(srcImage, tmpImage, d->weights0, d->weights1, srcHeight, srcWidth, srcHeight, dstWidth, field_n, 1 - field_n, -1);
                 queue.enqueue_nd_range_kernel(kernel, 2, nullptr, globalWorkSize, localWorkSize);
 
-                globalWorkSize[0] = static_cast<size_t>(((dstWidth + 7) / 8 + 7) & -8);
-                globalWorkSize[1] = static_cast<size_t>((dstHeight / 2 + 7) & -8);
+                globalWorkSize[0] = static_cast<size_t>(((dstWidth + 7) / 8 + 3) & -4);
+                globalWorkSize[1] = static_cast<size_t>((dstHeight / 2 + 15) & -16);
                 kernel.set_args(tmpImage, dstImage, d->weights0, d->weights1, dstWidth, srcHeight, dstWidth, dstHeight, field_n, 1 - field_n, 0);
                 queue.enqueue_nd_range_kernel(kernel, 2, nullptr, globalWorkSize, localWorkSize);
             } else if (d->dw) {
-                const size_t globalWorkSize[] = { static_cast<size_t>(((dstHeight + 7) / 8 + 7) & -8), static_cast<size_t>((dstWidth / 2 + 7) & -8) };
+                const size_t globalWorkSize[] = { static_cast<size_t>(((dstHeight + 7) / 8 + 3) & -4), static_cast<size_t>((dstWidth / 2 + 15) & -16) };
                 kernel.set_args(srcImage, dstImage, d->weights0, d->weights1, srcHeight, srcWidth, dstHeight, dstWidth, field_n, 1 - field_n, -1);
                 queue.enqueue_nd_range_kernel(kernel, 2, nullptr, globalWorkSize, localWorkSize);
             } else {
-                const size_t globalWorkSize[] = { static_cast<size_t>(((dstWidth + 7) / 8 + 7) & -8), static_cast<size_t>((dstHeight / 2 + 7) & -8) };
+                const size_t globalWorkSize[] = { static_cast<size_t>(((dstWidth + 7) / 8 + 3) & -4), static_cast<size_t>((dstHeight / 2 + 15) & -16) };
                 kernel.set_args(srcImage, dstImage, d->weights0, d->weights1, srcWidth, srcHeight, dstWidth, dstHeight, field_n, 1 - field_n, 0);
                 queue.enqueue_nd_range_kernel(kernel, 2, nullptr, globalWorkSize, localWorkSize);
             }
@@ -802,8 +802,8 @@ void VS_CC nnedi3clCreate(const VSMap *in, VSMap *out, void *userData, VSCore *c
         const int xdiad2m1 = std::max(xdia, (pscrn == 1) ? 12 : 16) / 2 - 1;
         const int ydiad2m1 = ydia / 2 - 1;
         const int xOffset = (xdia == 8) ? (pscrn == 1 ? 2 : 4) : 0;
-        const int inputWidth = std::max(xdia, (pscrn == 1) ? 12 : 16) + 64 - 1;
-        const int inputHeight = ydia + 8 - 1;
+        const int inputWidth = std::max(xdia, (pscrn == 1) ? 12 : 16) + 32 - 1;
+        const int inputHeight = ydia + 16 - 1;
         const float scaleAsize = 1.f / asize;
         const float scaleQual = 1.f / qual;
 
@@ -884,11 +884,11 @@ void VS_CC nnedi3clCreate(const VSMap *in, VSMap *out, void *userData, VSCore *c
             if (!(d->dh || d->dw)) {
                 options += " -D Y_OFFSET=" + std::to_string(ydia - 1);
                 options += " -D Y_STEP=" + std::to_string(2);
-                options += " -D Y_STRIDE=" + std::to_string(16);
+                options += " -D Y_STRIDE=" + std::to_string(32);
             } else {
                 options += " -D Y_OFFSET=" + std::to_string(ydia / 2);
                 options += " -D Y_STEP=" + std::to_string(1);
-                options += " -D Y_STRIDE=" + std::to_string(8);
+                options += " -D Y_STRIDE=" + std::to_string(16);
             }
             std::setlocale(LC_ALL, "");
             d->program.build(options);
