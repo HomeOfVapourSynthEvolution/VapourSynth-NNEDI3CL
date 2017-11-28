@@ -1,5 +1,5 @@
 warning_flags = -Wall -Wextra -Wno-unused-parameter -Wno-ignored-attributes
-common_cflags = -O3 -ffast-math $(warning_flags) $(MFLAGS)
+common_cflags = -O3 -ffast-math -fvisibility=hidden $(warning_flags) $(MFLAGS)
 AM_CXXFLAGS = -std=c++14 $(common_cflags)
 
 AM_CPPFLAGS = $(VapourSynth_CFLAGS) -DNNEDI3_DATADIR='"$(pkgdatadir)"'
