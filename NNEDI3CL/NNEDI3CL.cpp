@@ -36,6 +36,7 @@
 #include <VapourSynth.h>
 #include <VSHelper.h>
 
+#define BOOST_COMPUTE_DEBUG_KERNEL_COMPILATION
 #define BOOST_COMPUTE_HAVE_THREAD_LOCAL
 #define BOOST_COMPUTE_THREAD_SAFE
 #define BOOST_COMPUTE_USE_OFFLINE_CACHE
@@ -68,7 +69,7 @@ struct NNEDI3CLData {
     std::unordered_map<std::thread::id, compute::image2d> src, dst, tmp;
 };
 
-static inline int roundds(const double f) {
+static inline int roundds(const double f) noexcept {
     return (f - std::floor(f) >= 0.5) ? std::min(static_cast<int>(std::ceil(f)), 32767) : std::max(static_cast<int>(std::floor(f)), -32768);
 }
 
@@ -243,7 +244,7 @@ void VS_CC nnedi3clCreate(const VSMap *in, VSMap *out, void *userData, VSCore *c
     try {
         if (!isConstantFormat(&d->vi) || (d->vi.format->sampleType == stInteger && d->vi.format->bitsPerSample > 16) ||
             (d->vi.format->sampleType == stFloat && d->vi.format->bitsPerSample != 32))
-            throw std::string{ "only constant format 8-16 bits integer and 32 bits float input supported" };
+            throw std::string{ "only constant format 8-16 bit integer and 32 bit float input supported" };
 
         d->field = int64ToIntS(vsapi->propGetInt(in, "field", 0, nullptr));
 
@@ -608,7 +609,7 @@ void VS_CC nnedi3clCreate(const VSMap *in, VSMap *out, void *userData, VSCore *c
         try {
             std::setlocale(LC_ALL, "C");
             char buf[100];
-            std::string options{ "-cl-single-precision-constant -cl-denorms-are-zero -cl-fast-relaxed-math -Werror" };
+            std::string options{ "-cl-denorms-are-zero -cl-fast-relaxed-math -Werror" };
             options += " -D QUAL=" + std::to_string(qual);
             options += " -D PRESCREEN=" + std::string{ pscrn == 1 ? "prescreenOld" : "prescreenNew" };
             options += " -D PSCRN_OFFSET=" + std::to_string(pscrn == 1 ? 5 : 6);
@@ -623,9 +624,9 @@ void VS_CC nnedi3clCreate(const VSMap *in, VSMap *out, void *userData, VSCore *c
             options += " -D X_OFFSET=" + std::to_string(xOffset);
             options += " -D INPUT_WIDTH=" + std::to_string(inputWidth);
             options += " -D INPUT_HEIGHT=" + std::to_string(inputHeight);
-            std::snprintf(buf, 100, "%.20f", scaleAsize);
+            std::snprintf(buf, 100, "%.20ff", scaleAsize);
             options += " -D SCALE_ASIZE=" + std::string{ buf };
-            std::snprintf(buf, 100, "%.20f", scaleQual);
+            std::snprintf(buf, 100, "%.20ff", scaleQual);
             options += " -D SCALE_QUAL=" + std::string{ buf };
             options += " -D PEAK=" + std::to_string(peak);
             if (!(d->dh || d->dw)) {
