@@ -1,4 +1,4 @@
-AC_INIT([NNEDI3CL], [6], [https://github.com/HomeOfVapourSynthEvolution/VapourSynth-NNEDI3CL/issues], [NNEDI3CL], [https://github.com/HomeOfVapourSynthEvolution/VapourSynth-NNEDI3CL/])
+AC_INIT([NNEDI3CL], [7], [https://github.com/HomeOfVapourSynthEvolution/VapourSynth-NNEDI3CL/issues], [NNEDI3CL], [https://github.com/HomeOfVapourSynthEvolution/VapourSynth-NNEDI3CL/])
 
 : ${CXXFLAGS=""}
 
@@ -13,6 +13,7 @@ AC_CANONICAL_HOST
 
 
 X86="false"
+OPENCLLDFLAGS="-lOpenCL"
 
 AS_CASE(
         [$host_cpu],
@@ -22,6 +23,10 @@ AS_CASE(
 
 AS_CASE(
         [$host_os],
+        [darwin*],
+        [
+         OPENCLLDFLAGS="-framework OpenCL"
+        ],
         [cygwin*|mingw*],
         [
          AS_IF(
@@ -39,6 +44,8 @@ AS_IF(
        AC_SUBST([MFLAGS], ["-mfpmath=sse -msse2"])
       ]
 )
+
+AC_SUBST([OPENCLLDFLAGS])
 
 
 PKG_CHECK_MODULES([VapourSynth], [vapoursynth])

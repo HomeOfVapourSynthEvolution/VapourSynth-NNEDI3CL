@@ -10,4 +10,4 @@ lib_LTLIBRARIES = libnnedi3cl.la
 
 libnnedi3cl_la_SOURCES = NNEDI3CL/NNEDI3CL.cpp
 
-libnnedi3cl_la_LDFLAGS = -no-undefined -avoid-version -lboost_filesystem -lboost_system -lOpenCL $(PLUGINLDFLAGS)
+libnnedi3cl_la_LDFLAGS = -no-undefined -avoid-version -lboost_filesystem -lboost_system $(PLUGINLDFLAGS) $(OPENCLLDFLAGS)
