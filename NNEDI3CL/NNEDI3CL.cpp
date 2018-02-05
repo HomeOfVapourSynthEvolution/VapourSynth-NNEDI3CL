@@ -611,7 +611,15 @@ void VS_CC nnedi3clCreate(const VSMap *in, VSMap *out, void *userData, VSCore *c
             char buf[100];
             std::string options{ "-cl-denorms-are-zero -cl-fast-relaxed-math -Werror" };
             options += " -D QUAL=" + std::to_string(qual);
-            options += " -D PRESCREEN=" + std::string{ pscrn == 1 ? "prescreenOld" : "prescreenNew" };
+            if (pscrn == 1) {
+                options += " -D PRESCREEN=" + std::string{ "prescreenOld" };
+                options += " -D USE_OLD_PSCRN=" + std::to_string(1);
+                options += " -D USE_NEW_PSCRN=" + std::to_string(0);
+            } else {
+                options += " -D PRESCREEN=" + std::string{ "prescreenNew" };
+                options += " -D USE_OLD_PSCRN=" + std::to_string(0);
+                options += " -D USE_NEW_PSCRN=" + std::to_string(1);
+            }
             options += " -D PSCRN_OFFSET=" + std::to_string(pscrn == 1 ? 5 : 6);
             options += " -D DIMS1=" + std::to_string(dims1);
             options += " -D NNS=" + std::to_string(nnsTable[nns]);
