@@ -18,7 +18,7 @@ OPENCLLDFLAGS="-lOpenCL"
 AS_CASE(
         [$host_cpu],
         [i?86], [BITS="32" X86="true"],
-        [x86_64], [BITS="64" X86="true"],
+        [x86_64], [BITS="64" X86="true"]
 )
 
 AS_CASE(

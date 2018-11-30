@@ -9,7 +9,7 @@ Ported from AviSynth plugin http://bengal.missouri.edu/~kes25c/ and borrowed som
 Usage
 =====
 
-The file `nnedi3_weights.bin` is required. On Windows, it must be located in the same folder as `NNEDI3CL.dll`. Everywhere else it can be located either in the same folder as `libnnedi3cl.so`/`libnnedi3cl.dylib`, or in `$prefix/share/nnedi3/`. The build system installs it at the latter location automatically.
+The file `nnedi3_weights.bin` is required. On Windows, it must be located in the same folder as `NNEDI3CL.dll`. Everywhere else it can be located either in the same folder as `libnnedi3cl.so`/`libnnedi3cl.dylib`, or in `$prefix/share/NNEDI3CL/`. The build system installs it at the latter location automatically.
 
     nnedi3cl.NNEDI3CL(clip, int field[, bint dh=False, bint dw=False, int[] planes, int nsize=6, int nns=1, int qual=1, int etype=0, int pscrn=2, int device=-1, bint list_device=False, bint info=False])
 
@@ -55,15 +55,22 @@ The file `nnedi3_weights.bin` is required. On Windows, it must be located in the
 
 * device: Sets target OpenCL device. Use `list_device` to get the index of the available devices. By default the default device is selected.
 
-* list_device: Whether the devices list is drawn on the frame.
+* list_device: Whether to draw the devices list on the frame.
 
-* info: Whether the OpenCL-related info is drawn on the frame.
+* info: Whether to draw the OpenCL-related info on the frame.
 
 
 Compilation
 ===========
 
 Requires `Boost`.
+
+```
+meson build
+ninja -C build
+```
+
+or
 
 ```
 ./autogen.sh
