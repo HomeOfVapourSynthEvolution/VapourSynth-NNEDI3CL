@@ -566,7 +566,7 @@ void VS_CC nnedi3clCreate(const VSMap *in, VSMap *out, void *userData, VSCore *c
         delete[] weights0;
         delete[] weights1;
 
-        if (dims1 * 2 > d->gpu.get_info<size_t>(CL_DEVICE_IMAGE_MAX_BUFFER_SIZE))
+        if (static_cast<size_t>(dims1 * 2) > d->gpu.get_info<size_t>(CL_DEVICE_IMAGE_MAX_BUFFER_SIZE))
             throw std::string{ "the device's 1D Image Max Buffer Size is too small. Reduce nsize/nns...or buy a new graphics card" };
 
         if (!!vsapi->propGetInt(in, "info", 0, &err)) {
