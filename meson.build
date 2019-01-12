@@ -4,7 +4,7 @@ project('NNEDI3CL', 'cpp',
   version : '7'
 )
 
-add_project_arguments('-ffast-math', '-DNNEDI3_DATADIR=' + join_paths(get_option('prefix'), get_option('datadir'), meson.project_name()), language : 'cpp')
+add_project_arguments('-ffast-math', '-DNNEDI3_DATADIR="@0@"'.format(join_paths(get_option('prefix'), get_option('datadir'), meson.project_name())), language : 'cpp')
 
 sources = [
   'NNEDI3CL/NNEDI3CL.cpp'
