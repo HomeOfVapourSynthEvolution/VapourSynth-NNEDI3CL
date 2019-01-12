@@ -11,7 +11,7 @@ Usage
 
 The file `nnedi3_weights.bin` is required. On Windows, it must be located in the same folder as `NNEDI3CL.dll`. Everywhere else it can be located either in the same folder as `libnnedi3cl.so`/`libnnedi3cl.dylib`, or in `$prefix/share/NNEDI3CL/`. The build system installs it at the latter location automatically.
 
-    nnedi3cl.NNEDI3CL(clip, int field[, bint dh=False, bint dw=False, int[] planes, int nsize=6, int nns=1, int qual=1, int etype=0, int pscrn=2, int device=-1, bint list_device=False, bint info=False])
+    nnedi3cl.NNEDI3CL(clip, int field[, bint dh=False, bint dw=False, int[] planes=[0, 1, 2], int nsize=6, int nns=1, int qual=1, int etype=0, int pscrn=2, int device=-1, bint list_device=False, bint info=False])
 
 * clip: Clip to process. Any planar format with either integer sample type of 8-16 bit depth or float sample type of 32 bit depth is supported.
 
@@ -25,7 +25,7 @@ The file `nnedi3_weights.bin` is required. On Windows, it must be located in the
 
 * dw: Doubles the width of the input. It does the same thing as `Transpose().nnedi3(dh=True).Transpose()` but also avoids unnecessary data copies when you scale both dimensions.
 
-* planes: A list of the planes to process. By default all planes are processed.
+* planes: Sets which planes will be processed. Any unprocessed planes will be simply copied.
 
 * nsize: Sets the size of the local neighborhood around each pixel (x_diameter x y_diameter) that is used by the predictor neural network. For image enlargement it is recommended to use 0 or 4. Larger y_diameter settings will result in sharper output. For deinterlacing larger x_diameter settings will allow connecting lines of smaller slope. However, what setting to use really depends on the amount of aliasing (lost information) in the source. If the source was heavily low-pass filtered before interlacing then aliasing will be low and a large x_diameter setting wont be needed, and vice versa.
   * 0 = 8x6
@@ -68,12 +68,4 @@ Requires `Boost`.
 ```
 meson build
 ninja -C build
-```
-
-or
-
-```
-./autogen.sh
-./configure
-make
 ```
