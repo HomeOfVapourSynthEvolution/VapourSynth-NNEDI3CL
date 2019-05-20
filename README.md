@@ -25,7 +25,7 @@ The file `nnedi3_weights.bin` is required. On Windows, it must be located in the
 
 * dw: Doubles the width of the input. It does the same thing as `Transpose().nnedi3(dh=True).Transpose()` but also avoids unnecessary data copies when you scale both dimensions.
 
-* planes: Sets which planes will be processed. Any unprocessed planes will be simply copied.
+* planes: Sets which planes will be processed. Planes that are not processed will contain uninitialized memory.
 
 * nsize: Sets the size of the local neighborhood around each pixel (x_diameter x y_diameter) that is used by the predictor neural network. For image enlargement it is recommended to use 0 or 4. Larger y_diameter settings will result in sharper output. For deinterlacing larger x_diameter settings will allow connecting lines of smaller slope. However, what setting to use really depends on the amount of aliasing (lost information) in the source. If the source was heavily low-pass filtered before interlacing then aliasing will be low and a large x_diameter setting wont be needed, and vice versa.
   * 0 = 8x6
