@@ -42,7 +42,6 @@
 #define BOOST_COMPUTE_USE_OFFLINE_CACHE
 #include <boost/compute/core.hpp>
 #include <boost/compute/utility/dim.hpp>
-#include <boost/compute/utility/source.hpp>
 namespace compute = boost::compute;
 
 #include "NNEDI3CL.cl"
@@ -58,8 +57,8 @@ struct NNEDI3CLData {
     VSVideoInfo vi;
     int field;
     bool dh, dw, process[3];
-    compute::device gpu;
-    compute::context ctx;
+    compute::device device;
+    compute::context context;
     compute::program program;
     compute::buffer weights0, weights1Buffer;
     cl_mem weights1;
@@ -74,7 +73,7 @@ static inline int roundds(const double f) noexcept {
 }
 
 template<typename T>
-static void process(const VSFrameRef * src, VSFrameRef * dst, const int field_n, const NNEDI3CLData * d, const VSAPI * vsapi) {
+static void filter(const VSFrameRef * src, VSFrameRef * dst, const int field_n, const NNEDI3CLData * const VS_RESTRICT d, const VSAPI * vsapi) {
     for (int plane = 0; plane < d->vi.format->numPlanes; plane++) {
         if (d->process[plane]) {
             const int srcWidth = vsapi->getFrameWidth(src, plane);
@@ -133,31 +132,38 @@ static const VSFrameRef *VS_CC nnedi3clGetFrame(int n, int activationReason, voi
         try {
             auto threadId = std::this_thread::get_id();
 
-            if (!d->queue.count(threadId))
-                d->queue.emplace(threadId, compute::command_queue{ d->ctx, d->gpu });
+            if (!d->queue.count(threadId)) {
+                d->queue.emplace(threadId, compute::command_queue{ d->context, d->device });
 
-            if (!d->kernel.count(threadId)) {
                 if (d->vi.format->sampleType == stInteger)
-                    d->kernel.emplace(threadId, d->program.create_kernel("process_uint"));
+                    d->kernel.emplace(threadId, d->program.create_kernel("filter_uint"));
                 else
-                    d->kernel.emplace(threadId, d->program.create_kernel("process_float"));
-            }
+                    d->kernel.emplace(threadId, d->program.create_kernel("filter_float"));
 
-            if (!d->src.count(threadId))
-                d->src.emplace(threadId, compute::image2d{ d->ctx, static_cast<size_t>(vsapi->getVideoInfo(d->node)->width), static_cast<size_t>(vsapi->getVideoInfo(d->node)->height), compute::image_format{ d->clImageFormat }, CL_MEM_READ_ONLY | CL_MEM_HOST_WRITE_ONLY });
+                d->src.emplace(threadId,
+                               compute::image2d{ d->context,
+                                                 static_cast<size_t>(vsapi->getVideoInfo(d->node)->width),
+                                                 static_cast<size_t>(vsapi->getVideoInfo(d->node)->height),
+                                                 compute::image_format{ d->clImageFormat },
+                                                 CL_MEM_READ_ONLY | CL_MEM_HOST_WRITE_ONLY });
 
-            if (!d->dst.count(threadId))
-                d->dst.emplace(threadId, compute::image2d{ d->ctx, static_cast<size_t>(std::max(d->vi.width, d->vi.height)), static_cast<size_t>(std::max(d->vi.width, d->vi.height)), compute::image_format{ d->clImageFormat }, CL_MEM_READ_WRITE | CL_MEM_HOST_READ_ONLY });
+                d->dst.emplace(threadId,
+                               compute::image2d{ d->context,
+                                                 static_cast<size_t>(std::max(d->vi.width, d->vi.height)),
+                                                 static_cast<size_t>(std::max(d->vi.width, d->vi.height)),
+                                                 compute::image_format{ d->clImageFormat },
+                                                 CL_MEM_READ_WRITE | CL_MEM_HOST_READ_ONLY });
 
-            if (!d->tmp.count(threadId)) {
                 if (d->dh && d->dw)
-                    d->tmp.emplace(threadId, compute::image2d{ d->ctx, static_cast<size_t>(std::max(d->vi.width, d->vi.height)), static_cast<size_t>(std::max(d->vi.width, d->vi.height)), compute::image_format{ d->clImageFormat }, CL_MEM_READ_WRITE | CL_MEM_HOST_NO_ACCESS });
+                    d->tmp.emplace(threadId,
+                                   compute::image2d{ d->context,
+                                                     static_cast<size_t>(std::max(d->vi.width, d->vi.height)),
+                                                     static_cast<size_t>(std::max(d->vi.width, d->vi.height)),
+                                                     compute::image_format{ d->clImageFormat },
+                                                     CL_MEM_READ_WRITE | CL_MEM_HOST_NO_ACCESS });
                 else
                     d->tmp.emplace(threadId, compute::image2d{});
             }
-        } catch (const std::string & error) {
-            vsapi->setFilterError(("NNEDI3CL: " + error).c_str(), frameCtx);
-            return nullptr;
         } catch (const compute::opencl_error & error) {
             vsapi->setFilterError(("NNEDI3CL: " + error.error_string()).c_str(), frameCtx);
             return nullptr;
@@ -189,11 +195,11 @@ static const VSFrameRef *VS_CC nnedi3clGetFrame(int n, int activationReason, voi
 
         try {
             if (d->vi.format->bytesPerSample == 1)
-                process<uint8_t>(src, dst, field_n, d, vsapi);
+                filter<uint8_t>(src, dst, field_n, d, vsapi);
             else if (d->vi.format->bytesPerSample == 2)
-                process<uint16_t>(src, dst, field_n, d, vsapi);
+                filter<uint16_t>(src, dst, field_n, d, vsapi);
             else
-                process<float>(src, dst, field_n, d, vsapi);
+                filter<float>(src, dst, field_n, d, vsapi);
         } catch (const compute::opencl_error & error) {
             vsapi->setFilterError(("NNEDI3CL: " + error.error_string()).c_str(), frameCtx);
             vsapi->freeFrame(src);
@@ -233,14 +239,15 @@ static void VS_CC nnedi3clFree(void *instanceData, VSCore *core, const VSAPI *vs
 }
 
 void VS_CC nnedi3clCreate(const VSMap *in, VSMap *out, void *userData, VSCore *core, const VSAPI *vsapi) {
-    std::unique_ptr<NNEDI3CLData> d{ new NNEDI3CLData{} };
+    std::unique_ptr<NNEDI3CLData> d = std::make_unique<NNEDI3CLData>();
     int err;
 
     d->node = vsapi->propGetNode(in, "clip", 0, nullptr);
     d->vi = *vsapi->getVideoInfo(d->node);
 
     try {
-        if (!isConstantFormat(&d->vi) || (d->vi.format->sampleType == stInteger && d->vi.format->bitsPerSample > 16) ||
+        if (!isConstantFormat(&d->vi) ||
+            (d->vi.format->sampleType == stInteger && d->vi.format->bitsPerSample > 16) ||
             (d->vi.format->sampleType == stFloat && d->vi.format->bitsPerSample != 32))
             throw std::string{ "only constant format 8-16 bit integer and 32 bit float input supported" };
 
@@ -451,47 +458,47 @@ void VS_CC nnedi3clCreate(const VSMap *in, VSMap *out, void *userData, VSCore *c
             const float * bdw = bdata + dims0 + dims0new * (pscrn - 2);
             short * ws = reinterpret_cast<short *>(weights0);
             float * wf = reinterpret_cast<float *>(&ws[4 * 64]);
-            double mean[4] = { 0., 0., 0., 0. };
+            double mean[4] = { 0.0, 0.0, 0.0, 0.0 };
 
             // Calculate mean weight of each first layer neuron
             for (int j = 0; j < 4; j++) {
-                double cmean = 0.;
+                double cmean = 0.0;
                 for (int k = 0; k < 64; k++)
                     cmean += bdw[offt[j * 64 + k]];
 
-                mean[j] = cmean / 64.;
+                mean[j] = cmean / 64.0;
             }
 
-            const double half = peak / 2.;
+            const double half = peak / 2.0;
 
             // Factor mean removal and 1.0/half scaling into first layer weights. scale to int16 range
             for (int j = 0; j < 4; j++) {
-                double mval = 0.;
+                double mval = 0.0;
                 for (int k = 0; k < 64; k++)
                     mval = std::max(mval, std::abs((bdw[offt[j * 64 + k]] - mean[j]) / half));
 
-                const double scale = 32767. / mval;
+                const double scale = 32767.0 / mval;
                 for (int k = 0; k < 64; k++)
                     ws[offt[j * 64 + k]] = roundds(((bdw[offt[j * 64 + k]] - mean[j]) / half) * scale);
 
-                wf[j] = static_cast<float>(mval / 32767.);
+                wf[j] = static_cast<float>(mval / 32767.0);
             }
 
             memcpy(wf + 4, bdw + 4 * 64, (dims0new - 4 * 64) * sizeof(float));
             free(offt);
         } else { // using old prescreener
-            double mean[4] = { 0., 0., 0., 0. };
+            double mean[4] = { 0.0, 0.0, 0.0, 0.0 };
 
             // Calculate mean weight of each first layer neuron
             for (int j = 0; j < 4; j++) {
-                double cmean = 0.;
+                double cmean = 0.0;
                 for (int k = 0; k < 48; k++)
                     cmean += bdata[j * 48 + k];
 
-                mean[j] = cmean / 48.;
+                mean[j] = cmean / 48.0;
             }
 
-            const double half = (d->vi.format->sampleType == stInteger ? peak : 1.) / 2.;
+            const double half = (d->vi.format->sampleType == stInteger ? peak : 1.0) / 2.0;
 
             // Factor mean removal and 1.0/half scaling into first layer weights
             for (int j = 0; j < 4; j++) {
@@ -513,7 +520,7 @@ void VS_CC nnedi3clCreate(const VSMap *in, VSMap *out, void *userData, VSCore *c
 
             // Calculate mean weight of each neuron (ignore bias)
             for (int j = 0; j < nnst * 2; j++) {
-                double cmean = 0.;
+                double cmean = 0.0;
                 for (int k = 0; k < asize; k++)
                     cmean += bdataT[j * asize + k];
 
@@ -532,10 +539,10 @@ void VS_CC nnedi3clCreate(const VSMap *in, VSMap *out, void *userData, VSCore *c
             // Factor mean removal into weights, and remove global offset from softmax neurons
             for (int j = 0; j < nnst * 2; j++) {
                 for (int k = 0; k < asize; k++) {
-                    const double q = (j < nnst) ? mean[k] : 0.;
+                    const double q = (j < nnst) ? mean[k] : 0.0;
                     weightsT[j * asize + k] = static_cast<float>(bdataT[j * asize + k] - mean[asize + 1 + j] - q);
                 }
-                weightsT[boff + j] = static_cast<float>(bdataT[boff + j] - (j < nnst ? mean[asize] : 0.));
+                weightsT[boff + j] = static_cast<float>(bdataT[boff + j] - (j < nnst ? mean[asize] : 0.0));
             }
 
             free(mean);
@@ -551,39 +558,39 @@ void VS_CC nnedi3clCreate(const VSMap *in, VSMap *out, void *userData, VSCore *c
         const int xOffset = (xdia == 8) ? (pscrn == 1 ? 2 : 4) : 0;
         const int inputWidth = std::max(xdia, (pscrn == 1) ? 12 : 16) + 32 - 1;
         const int inputHeight = ydia + 16 - 1;
-        const float scaleAsize = 1.f / asize;
-        const float scaleQual = 1.f / qual;
+        const float scaleAsize = 1.0f / asize;
+        const float scaleQual = 1.0f / qual;
 
-        d->gpu = compute::system::default_device();
+        d->device = compute::system::default_device();
         if (device > -1)
-            d->gpu = compute::system::devices().at(device);
-        d->ctx = compute::context{ d->gpu };
+            d->device = compute::system::devices().at(device);
+        d->context = compute::context{ d->device };
 
-        d->weights0 = compute::buffer{ d->ctx, std::max(dims0, dims0new) * sizeof(cl_float), CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR | CL_MEM_HOST_NO_ACCESS, weights0 };
-        d->weights1Buffer = compute::buffer{ d->ctx, dims1 * 2 * sizeof(cl_float), CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR | CL_MEM_HOST_NO_ACCESS, weights1 };
+        d->weights0 = compute::buffer{ d->context, std::max(dims0, dims0new) * sizeof(cl_float), CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR | CL_MEM_HOST_NO_ACCESS, weights0 };
+        d->weights1Buffer = compute::buffer{ d->context, dims1 * 2 * sizeof(cl_float), CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR | CL_MEM_HOST_NO_ACCESS, weights1 };
         delete[] weights0;
         delete[] weights1;
 
-        if (static_cast<size_t>(dims1 * 2) > d->gpu.get_info<size_t>(CL_DEVICE_IMAGE_MAX_BUFFER_SIZE))
+        if (static_cast<size_t>(dims1 * 2) > d->device.get_info<size_t>(CL_DEVICE_IMAGE_MAX_BUFFER_SIZE))
             throw std::string{ "the device's 1D Image Max Buffer Size is too small. Reduce nsize/nns...or buy a new graphics card" };
 
         if (!!vsapi->propGetInt(in, "info", 0, &err)) {
             std::string text{ "=== Device Info ===\n" };
-            text += "Name: " + d->gpu.get_info<CL_DEVICE_NAME>() + "\n";
-            text += "Vendor: " + d->gpu.get_info<CL_DEVICE_VENDOR>() + "\n";
-            text += "Profile: " + d->gpu.get_info<CL_DEVICE_PROFILE>() + "\n";
-            text += "Version: " + d->gpu.get_info<CL_DEVICE_VERSION>() + "\n";
-            text += "Global Memory Size: " + std::to_string(d->gpu.get_info<CL_DEVICE_GLOBAL_MEM_SIZE>() / 1024 / 1024) + " MB\n";
-            text += "Local Memory Size: " + std::to_string(d->gpu.get_info<CL_DEVICE_LOCAL_MEM_SIZE>() / 1024) + " KB\n";
-            text += "Local Memory Type: " + std::string{ d->gpu.get_info<CL_DEVICE_LOCAL_MEM_TYPE>() == CL_LOCAL ? "CL_LOCAL" : "CL_GLOBAL" } +"\n";
-            text += "Image Support: " + std::string{ d->gpu.get_info<CL_DEVICE_IMAGE_SUPPORT>() ? "CL_TRUE" : "CL_FALSE" } +"\n";
-            text += "1D Image Max Buffer Size: " + std::to_string(d->gpu.get_info<size_t>(CL_DEVICE_IMAGE_MAX_BUFFER_SIZE)) + "\n";
-            text += "2D Image Max Width: " + std::to_string(d->gpu.get_info<CL_DEVICE_IMAGE2D_MAX_WIDTH>()) + "\n";
-            text += "2D Image Max Height: " + std::to_string(d->gpu.get_info<CL_DEVICE_IMAGE2D_MAX_HEIGHT>()) + "\n";
-            text += "Max Constant Arguments: " + std::to_string(d->gpu.get_info<CL_DEVICE_MAX_CONSTANT_ARGS>()) + "\n";
-            text += "Max Constant Buffer Size: " + std::to_string(d->gpu.get_info<CL_DEVICE_MAX_CONSTANT_BUFFER_SIZE>() / 1024) + " KB\n";
-            text += "Max Work-group Size: " + std::to_string(d->gpu.get_info<CL_DEVICE_MAX_WORK_GROUP_SIZE>()) + "\n";
-            const auto MAX_WORK_ITEM_SIZES = d->gpu.get_info<CL_DEVICE_MAX_WORK_ITEM_SIZES>();
+            text += "Name: " + d->device.get_info<CL_DEVICE_NAME>() + "\n";
+            text += "Vendor: " + d->device.get_info<CL_DEVICE_VENDOR>() + "\n";
+            text += "Profile: " + d->device.get_info<CL_DEVICE_PROFILE>() + "\n";
+            text += "Version: " + d->device.get_info<CL_DEVICE_VERSION>() + "\n";
+            text += "Global Memory Size: " + std::to_string(d->device.get_info<CL_DEVICE_GLOBAL_MEM_SIZE>() / 1024 / 1024) + " MB\n";
+            text += "Local Memory Size: " + std::to_string(d->device.get_info<CL_DEVICE_LOCAL_MEM_SIZE>() / 1024) + " KB\n";
+            text += "Local Memory Type: " + std::string{ d->device.get_info<CL_DEVICE_LOCAL_MEM_TYPE>() == CL_LOCAL ? "CL_LOCAL" : "CL_GLOBAL" } +"\n";
+            text += "Image Support: " + std::string{ d->device.get_info<CL_DEVICE_IMAGE_SUPPORT>() ? "CL_TRUE" : "CL_FALSE" } +"\n";
+            text += "1D Image Max Buffer Size: " + std::to_string(d->device.get_info<size_t>(CL_DEVICE_IMAGE_MAX_BUFFER_SIZE)) + "\n";
+            text += "2D Image Max Width: " + std::to_string(d->device.get_info<CL_DEVICE_IMAGE2D_MAX_WIDTH>()) + "\n";
+            text += "2D Image Max Height: " + std::to_string(d->device.get_info<CL_DEVICE_IMAGE2D_MAX_HEIGHT>()) + "\n";
+            text += "Max Constant Arguments: " + std::to_string(d->device.get_info<CL_DEVICE_MAX_CONSTANT_ARGS>()) + "\n";
+            text += "Max Constant Buffer Size: " + std::to_string(d->device.get_info<CL_DEVICE_MAX_CONSTANT_BUFFER_SIZE>() / 1024) + " KB\n";
+            text += "Max Work-group Size: " + std::to_string(d->device.get_info<CL_DEVICE_MAX_WORK_GROUP_SIZE>()) + "\n";
+            const auto MAX_WORK_ITEM_SIZES = d->device.get_info<CL_DEVICE_MAX_WORK_ITEM_SIZES>();
             text += "Max Work-item Sizes: (" + std::to_string(MAX_WORK_ITEM_SIZES[0]) + ", " + std::to_string(MAX_WORK_ITEM_SIZES[1]) + ", " + std::to_string(MAX_WORK_ITEM_SIZES[2]) + ")";
 
             VSMap * args = vsapi->createMap();
@@ -648,7 +655,7 @@ void VS_CC nnedi3clCreate(const VSMap *in, VSMap *out, void *userData, VSCore *c
                 options += " -D Y_STRIDE=" + std::to_string(16);
             }
             std::setlocale(LC_ALL, "");
-            d->program = compute::program::build_with_source(source, d->ctx, options);
+            d->program = compute::program::build_with_source(source, d->context, options);
         } catch (const compute::opencl_error & error) {
             throw error.error_string() + "\n" + d->program.build_log();
         }
@@ -681,7 +688,7 @@ void VS_CC nnedi3clCreate(const VSMap *in, VSMap *out, void *userData, VSCore *c
 
             cl_int error = 0;
 
-            cl_mem mem = clCreateImage(d->ctx, 0, &format, &desc, nullptr, &error);
+            cl_mem mem = clCreateImage(d->context, 0, &format, &desc, nullptr, &error);
             if (!mem)
                 BOOST_THROW_EXCEPTION(compute::opencl_error(error));
 
