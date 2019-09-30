@@ -359,6 +359,73 @@ void VS_CC nnedi3clCreate(const VSMap *in, VSMap *out, void *userData, VSCore *c
             return;
         }
 
+        d->device = compute::system::default_device();
+        if (device > -1)
+            d->device = compute::system::devices().at(device);
+        d->context = compute::context{ d->device };
+
+        if (!!vsapi->propGetInt(in, "info", 0, &err)) {
+            std::string text{ "=== Platform Info ===\n" };
+            const auto platform = d->device.platform();
+            text += "Profile: " + platform.get_info<CL_PLATFORM_PROFILE>() + "\n";
+            text += "Version: " + platform.get_info<CL_PLATFORM_VERSION>() + "\n";
+            text += "Name: " + platform.get_info<CL_PLATFORM_NAME>() + "\n";
+            text += "Vendor: " + platform.get_info<CL_PLATFORM_VENDOR>() + "\n";
+
+            text += "\n";
+
+            text += "=== Device Info ===\n";
+            text += "Name: " + d->device.get_info<CL_DEVICE_NAME>() + "\n";
+            text += "Vendor: " + d->device.get_info<CL_DEVICE_VENDOR>() + "\n";
+            text += "Profile: " + d->device.get_info<CL_DEVICE_PROFILE>() + "\n";
+            text += "Version: " + d->device.get_info<CL_DEVICE_VERSION>() + "\n";
+            text += "Max compute units: " + std::to_string(d->device.get_info<CL_DEVICE_MAX_COMPUTE_UNITS>()) + "\n";
+            text += "Max work-group size: " + std::to_string(d->device.get_info<CL_DEVICE_MAX_WORK_GROUP_SIZE>()) + "\n";
+            const auto max_work_item_sizes = d->device.get_info<CL_DEVICE_MAX_WORK_ITEM_SIZES>();
+            text += "Max work-item sizes: " + std::to_string(max_work_item_sizes[0]) + ", " + std::to_string(max_work_item_sizes[1]) + ", " + std::to_string(max_work_item_sizes[2]) + "\n";
+            text += "2D image max width: " + std::to_string(d->device.get_info<CL_DEVICE_IMAGE2D_MAX_WIDTH>()) + "\n";
+            text += "2D image max height: " + std::to_string(d->device.get_info<CL_DEVICE_IMAGE2D_MAX_HEIGHT>()) + "\n";
+            text += "Image support: " + std::string{ d->device.get_info<CL_DEVICE_IMAGE_SUPPORT>() ? "CL_TRUE" : "CL_FALSE" } +"\n";
+            const auto global_mem_cache_type = d->device.get_info<CL_DEVICE_GLOBAL_MEM_CACHE_TYPE>();
+            if (global_mem_cache_type == CL_NONE)
+                text += "Global memory cache type: CL_NONE\n";
+            else if (global_mem_cache_type == CL_READ_ONLY_CACHE)
+                text += "Global memory cache type: CL_READ_ONLY_CACHE\n";
+            else if (global_mem_cache_type == CL_READ_WRITE_CACHE)
+                text += "Global memory cache type: CL_READ_WRITE_CACHE\n";
+            text += "Global memory cache size: " + std::to_string(d->device.get_info<CL_DEVICE_GLOBAL_MEM_CACHE_SIZE>() / 1024) + " KB\n";
+            text += "Global memory size: " + std::to_string(d->device.get_info<CL_DEVICE_GLOBAL_MEM_SIZE>() / (1024 * 1024)) + " MB\n";
+            text += "Max constant buffer size: " + std::to_string(d->device.get_info<CL_DEVICE_MAX_CONSTANT_BUFFER_SIZE>() / 1024) + " KB\n";
+            text += "Max constant arguments: " + std::to_string(d->device.get_info<CL_DEVICE_MAX_CONSTANT_ARGS>()) + "\n";
+            text += "Local memory type: " + std::string{ d->device.get_info<CL_DEVICE_LOCAL_MEM_TYPE>() == CL_LOCAL ? "CL_LOCAL" : "CL_GLOBAL" } +"\n";
+            text += "Local memory size: " + std::to_string(d->device.get_info<CL_DEVICE_LOCAL_MEM_SIZE>() / 1024) + " KB\n";
+            text += "Available: " + std::string{ d->device.get_info<CL_DEVICE_AVAILABLE>() ? "CL_TRUE" : "CL_FALSE" } +"\n";
+            text += "Compiler available: " + std::string{ d->device.get_info<CL_DEVICE_COMPILER_AVAILABLE>() ? "CL_TRUE" : "CL_FALSE" } +"\n";
+            text += "OpenCL C version: " + d->device.get_info<CL_DEVICE_OPENCL_C_VERSION>() + "\n";
+            text += "Linker available: " + std::string{ d->device.get_info<CL_DEVICE_LINKER_AVAILABLE>() ? "CL_TRUE" : "CL_FALSE" } +"\n";
+            text += "Image max buffer size: " + std::to_string(d->device.get_info<size_t>(CL_DEVICE_IMAGE_MAX_BUFFER_SIZE) / 1024) + " KB";
+
+            VSMap * args = vsapi->createMap();
+            vsapi->propSetNode(args, "clip", d->node, paReplace);
+            vsapi->freeNode(d->node);
+            vsapi->propSetData(args, "text", text.c_str(), -1, paReplace);
+
+            VSMap * ret = vsapi->invoke(vsapi->getPluginById("com.vapoursynth.text", core), "Text", args);
+            if (vsapi->getError(ret)) {
+                vsapi->setError(out, vsapi->getError(ret));
+                vsapi->freeMap(args);
+                vsapi->freeMap(ret);
+                return;
+            }
+
+            d->node = vsapi->propGetNode(ret, "clip", 0, nullptr);
+            vsapi->freeMap(args);
+            vsapi->freeMap(ret);
+            vsapi->propSetNode(out, "clip", d->node, paReplace);
+            vsapi->freeNode(d->node);
+            return;
+        }
+
         if (d->field > 1) {
             if (d->vi.numFrames > INT_MAX / 2)
                 throw std::string{ "resulting clip is too long" };
@@ -561,58 +628,13 @@ void VS_CC nnedi3clCreate(const VSMap *in, VSMap *out, void *userData, VSCore *c
         const float scaleAsize = 1.0f / asize;
         const float scaleQual = 1.0f / qual;
 
-        d->device = compute::system::default_device();
-        if (device > -1)
-            d->device = compute::system::devices().at(device);
-        d->context = compute::context{ d->device };
-
         d->weights0 = compute::buffer{ d->context, std::max(dims0, dims0new) * sizeof(cl_float), CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR | CL_MEM_HOST_NO_ACCESS, weights0 };
         d->weights1Buffer = compute::buffer{ d->context, dims1 * 2 * sizeof(cl_float), CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR | CL_MEM_HOST_NO_ACCESS, weights1 };
         delete[] weights0;
         delete[] weights1;
 
         if (static_cast<size_t>(dims1 * 2) > d->device.get_info<size_t>(CL_DEVICE_IMAGE_MAX_BUFFER_SIZE))
-            throw std::string{ "the device's 1D Image Max Buffer Size is too small. Reduce nsize/nns...or buy a new graphics card" };
-
-        if (!!vsapi->propGetInt(in, "info", 0, &err)) {
-            std::string text{ "=== Device Info ===\n" };
-            text += "Name: " + d->device.get_info<CL_DEVICE_NAME>() + "\n";
-            text += "Vendor: " + d->device.get_info<CL_DEVICE_VENDOR>() + "\n";
-            text += "Profile: " + d->device.get_info<CL_DEVICE_PROFILE>() + "\n";
-            text += "Version: " + d->device.get_info<CL_DEVICE_VERSION>() + "\n";
-            text += "Global Memory Size: " + std::to_string(d->device.get_info<CL_DEVICE_GLOBAL_MEM_SIZE>() / 1024 / 1024) + " MB\n";
-            text += "Local Memory Size: " + std::to_string(d->device.get_info<CL_DEVICE_LOCAL_MEM_SIZE>() / 1024) + " KB\n";
-            text += "Local Memory Type: " + std::string{ d->device.get_info<CL_DEVICE_LOCAL_MEM_TYPE>() == CL_LOCAL ? "CL_LOCAL" : "CL_GLOBAL" } +"\n";
-            text += "Image Support: " + std::string{ d->device.get_info<CL_DEVICE_IMAGE_SUPPORT>() ? "CL_TRUE" : "CL_FALSE" } +"\n";
-            text += "1D Image Max Buffer Size: " + std::to_string(d->device.get_info<size_t>(CL_DEVICE_IMAGE_MAX_BUFFER_SIZE)) + "\n";
-            text += "2D Image Max Width: " + std::to_string(d->device.get_info<CL_DEVICE_IMAGE2D_MAX_WIDTH>()) + "\n";
-            text += "2D Image Max Height: " + std::to_string(d->device.get_info<CL_DEVICE_IMAGE2D_MAX_HEIGHT>()) + "\n";
-            text += "Max Constant Arguments: " + std::to_string(d->device.get_info<CL_DEVICE_MAX_CONSTANT_ARGS>()) + "\n";
-            text += "Max Constant Buffer Size: " + std::to_string(d->device.get_info<CL_DEVICE_MAX_CONSTANT_BUFFER_SIZE>() / 1024) + " KB\n";
-            text += "Max Work-group Size: " + std::to_string(d->device.get_info<CL_DEVICE_MAX_WORK_GROUP_SIZE>()) + "\n";
-            const auto MAX_WORK_ITEM_SIZES = d->device.get_info<CL_DEVICE_MAX_WORK_ITEM_SIZES>();
-            text += "Max Work-item Sizes: (" + std::to_string(MAX_WORK_ITEM_SIZES[0]) + ", " + std::to_string(MAX_WORK_ITEM_SIZES[1]) + ", " + std::to_string(MAX_WORK_ITEM_SIZES[2]) + ")";
-
-            VSMap * args = vsapi->createMap();
-            vsapi->propSetNode(args, "clip", d->node, paReplace);
-            vsapi->freeNode(d->node);
-            vsapi->propSetData(args, "text", text.c_str(), -1, paReplace);
-
-            VSMap * ret = vsapi->invoke(vsapi->getPluginById("com.vapoursynth.text", core), "Text", args);
-            if (vsapi->getError(ret)) {
-                vsapi->setError(out, vsapi->getError(ret));
-                vsapi->freeMap(args);
-                vsapi->freeMap(ret);
-                return;
-            }
-
-            d->node = vsapi->propGetNode(ret, "clip", 0, nullptr);
-            vsapi->freeMap(args);
-            vsapi->freeMap(ret);
-            vsapi->propSetNode(out, "clip", d->node, paReplace);
-            vsapi->freeNode(d->node);
-            return;
-        }
+            throw std::string{ "the device's image max buffer size is too small. Reduce nsize/nns...or buy a new graphics card" };
 
         try {
             std::setlocale(LC_ALL, "C");
