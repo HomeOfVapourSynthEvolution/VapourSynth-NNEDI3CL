@@ -30,12 +30,18 @@
 #include <thread>
 #include <unordered_map>
 
-#ifdef _WIN32
-#include <codecvt>
-#endif
-
 #include <VapourSynth.h>
 #include <VSHelper.h>
+
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
 
 #define BOOST_COMPUTE_DEBUG_KERNEL_COMPILATION
 #define BOOST_COMPUTE_HAVE_THREAD_LOCAL
@@ -455,8 +461,10 @@ void VS_CC nnedi3clCreate(const VSMap *in, VSMap *out, void *userData, VSCore *c
 
         FILE * weightsFile = nullptr;
 #ifdef _WIN32
-        std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>, wchar_t> utf16;
-        weightsFile = _wfopen(utf16.from_bytes(weightsPath).c_str(), L"rb");
+        const int requiredSize = MultiByteToWideChar(CP_UTF8, 0, weightsPath.c_str(), -1, nullptr, 0);
+        std::unique_ptr<wchar_t[]> wbuffer = std::make_unique<wchar_t[]>(requiredSize);
+        MultiByteToWideChar(CP_UTF8, 0, weightsPath.c_str(), -1, wbuffer.get(), requiredSize);
+        weightsFile = _wfopen(wbuffer.get(), L"rb");
 #else
         weightsFile = std::fopen(weightsPath.c_str(), "rb");
 #endif
