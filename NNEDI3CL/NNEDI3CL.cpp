@@ -21,16 +21,17 @@
 */
 
 #include <cerrno>
-#include <clocale>
 #include <cstdio>
+
+#include <locale>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <unordered_map>
 
 #ifdef _WIN32
 #include <codecvt>
-#include <locale>
 #endif
 
 #include <VapourSynth.h>
@@ -637,47 +638,46 @@ void VS_CC nnedi3clCreate(const VSMap *in, VSMap *out, void *userData, VSCore *c
             throw std::string{ "the device's image max buffer size is too small. Reduce nsize/nns...or buy a new graphics card" };
 
         try {
-            std::setlocale(LC_ALL, "C");
-            char buf[100];
-            std::string options{ "-cl-denorms-are-zero -cl-fast-relaxed-math -Werror" };
-            options += " -D QUAL=" + std::to_string(qual);
+            std::ostringstream options;
+            options.imbue(std::locale{ "C" });
+            options.precision(16);
+            options.setf(std::ios::fixed, std::ios::floatfield);
+            options << "-cl-denorms-are-zero -cl-fast-relaxed-math -Werror";
+            options << " -D QUAL=" << qual;
             if (pscrn == 1) {
-                options += " -D PRESCREEN=" + std::string{ "prescreenOld" };
-                options += " -D USE_OLD_PSCRN=" + std::to_string(1);
-                options += " -D USE_NEW_PSCRN=" + std::to_string(0);
+                options << " -D PRESCREEN=prescreenOld";
+                options << " -D USE_OLD_PSCRN=1";
+                options << " -D USE_NEW_PSCRN=0";
             } else {
-                options += " -D PRESCREEN=" + std::string{ "prescreenNew" };
-                options += " -D USE_OLD_PSCRN=" + std::to_string(0);
-                options += " -D USE_NEW_PSCRN=" + std::to_string(1);
+                options << " -D PRESCREEN=prescreenNew";
+                options << " -D USE_OLD_PSCRN=0";
+                options << " -D USE_NEW_PSCRN=1";
             }
-            options += " -D PSCRN_OFFSET=" + std::to_string(pscrn == 1 ? 5 : 6);
-            options += " -D DIMS1=" + std::to_string(dims1);
-            options += " -D NNS=" + std::to_string(nnsTable[nns]);
-            options += " -D NNS2=" + std::to_string(nnsTable[nns] * 2);
-            options += " -D XDIA=" + std::to_string(xdia);
-            options += " -D YDIA=" + std::to_string(ydia);
-            options += " -D ASIZE=" + std::to_string(asize);
-            options += " -D XDIAD2M1=" + std::to_string(xdiad2m1);
-            options += " -D YDIAD2M1=" + std::to_string(ydiad2m1);
-            options += " -D X_OFFSET=" + std::to_string(xOffset);
-            options += " -D INPUT_WIDTH=" + std::to_string(inputWidth);
-            options += " -D INPUT_HEIGHT=" + std::to_string(inputHeight);
-            std::snprintf(buf, 100, "%.20ff", scaleAsize);
-            options += " -D SCALE_ASIZE=" + std::string{ buf };
-            std::snprintf(buf, 100, "%.20ff", scaleQual);
-            options += " -D SCALE_QUAL=" + std::string{ buf };
-            options += " -D PEAK=" + std::to_string(peak);
+            options << " -D PSCRN_OFFSET=" << (pscrn == 1 ? 5 : 6);
+            options << " -D DIMS1=" << dims1;
+            options << " -D NNS=" << nnsTable[nns];
+            options << " -D NNS2=" << (nnsTable[nns] * 2);
+            options << " -D XDIA=" << xdia;
+            options << " -D YDIA=" << ydia;
+            options << " -D ASIZE=" << asize;
+            options << " -D XDIAD2M1=" << xdiad2m1;
+            options << " -D YDIAD2M1=" << ydiad2m1;
+            options << " -D X_OFFSET=" << xOffset;
+            options << " -D INPUT_WIDTH=" << inputWidth;
+            options << " -D INPUT_HEIGHT=" << inputHeight;
+            options << " -D SCALE_ASIZE=" << scaleAsize << "f";
+            options << " -D SCALE_QUAL=" << scaleQual << "f";
+            options << " -D PEAK=" << peak;
             if (!(d->dh || d->dw)) {
-                options += " -D Y_OFFSET=" + std::to_string(ydia - 1);
-                options += " -D Y_STEP=" + std::to_string(2);
-                options += " -D Y_STRIDE=" + std::to_string(32);
+                options << " -D Y_OFFSET=" << (ydia - 1);
+                options << " -D Y_STEP=2";
+                options << " -D Y_STRIDE=32";
             } else {
-                options += " -D Y_OFFSET=" + std::to_string(ydia / 2);
-                options += " -D Y_STEP=" + std::to_string(1);
-                options += " -D Y_STRIDE=" + std::to_string(16);
+                options << " -D Y_OFFSET=" << (ydia / 2);
+                options << " -D Y_STEP=1";
+                options << " -D Y_STRIDE=16";
             }
-            std::setlocale(LC_ALL, "");
-            d->program = compute::program::build_with_source(source, d->context, options);
+            d->program = compute::program::build_with_source(source, d->context, options.str());
         } catch (const compute::opencl_error & error) {
             throw error.error_string() + "\n" + d->program.build_log();
         }
