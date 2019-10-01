@@ -27,8 +27,6 @@
 #include <memory>
 #include <sstream>
 #include <string>
-#include <thread>
-#include <unordered_map>
 
 #include <VapourSynth.h>
 #include <VSHelper.h>
@@ -64,15 +62,11 @@ struct NNEDI3CLData {
     VSVideoInfo vi;
     int field;
     bool dh, dw, process[3];
-    compute::device device;
-    compute::context context;
-    compute::program program;
+    compute::command_queue queue;
+    compute::kernel kernel;
+    compute::image2d src, dst, tmp;
     compute::buffer weights0, weights1Buffer;
     cl_mem weights1;
-    cl_image_format clImageFormat;
-    std::unordered_map<std::thread::id, compute::command_queue> queue;
-    std::unordered_map<std::thread::id, compute::kernel> kernel;
-    std::unordered_map<std::thread::id, compute::image2d> src, dst, tmp;
 };
 
 static inline int roundds(const double f) noexcept {
@@ -90,12 +84,11 @@ static void filter(const VSFrameRef * src, VSFrameRef * dst, const int field_n, 
             const T * srcp = reinterpret_cast<const T *>(vsapi->getReadPtr(src, plane));
             T * VS_RESTRICT dstp = reinterpret_cast<T *>(vsapi->getWritePtr(dst, plane));
 
-            const auto threadId = std::this_thread::get_id();
-            auto queue = d->queue.at(threadId);
-            auto kernel = d->kernel.at(threadId);
-            auto srcImage = d->src.at(threadId);
-            auto dstImage = d->dst.at(threadId);
-            auto tmpImage = d->tmp.at(threadId);
+            auto queue = d->queue;
+            auto kernel = d->kernel;
+            auto srcImage = d->src;
+            auto dstImage = d->dst;
+            auto tmpImage = d->tmp;
 
             constexpr size_t localWorkSize[] = { 4, 16 };
 
@@ -125,57 +118,17 @@ static void filter(const VSFrameRef * src, VSFrameRef * dst, const int field_n, 
     }
 }
 
-static void VS_CC nnedi3clInit(VSMap *in, VSMap *out, void **instanceData, VSNode *node, VSCore *core, const VSAPI *vsapi) {
+static void VS_CC nnedi3clInit(VSMap * in, VSMap * out, void ** instanceData, VSNode * node, VSCore * core, const VSAPI * vsapi) {
     NNEDI3CLData * d = static_cast<NNEDI3CLData *>(*instanceData);
     vsapi->setVideoInfo(&d->vi, 1, node);
 }
 
-static const VSFrameRef *VS_CC nnedi3clGetFrame(int n, int activationReason, void **instanceData, void **frameData, VSFrameContext *frameCtx, VSCore *core, const VSAPI *vsapi) {
+static const VSFrameRef * VS_CC nnedi3clGetFrame(int n, int activationReason, void ** instanceData, void ** frameData, VSFrameContext * frameCtx, VSCore * core, const VSAPI * vsapi) {
     NNEDI3CLData * d = static_cast<NNEDI3CLData *>(*instanceData);
 
     if (activationReason == arInitial) {
         vsapi->requestFrameFilter(d->field > 1 ? n / 2 : n, d->node, frameCtx);
     } else if (activationReason == arAllFramesReady) {
-        try {
-            auto threadId = std::this_thread::get_id();
-
-            if (!d->queue.count(threadId)) {
-                d->queue.emplace(threadId, compute::command_queue{ d->context, d->device });
-
-                if (d->vi.format->sampleType == stInteger)
-                    d->kernel.emplace(threadId, d->program.create_kernel("filter_uint"));
-                else
-                    d->kernel.emplace(threadId, d->program.create_kernel("filter_float"));
-
-                d->src.emplace(threadId,
-                               compute::image2d{ d->context,
-                                                 static_cast<size_t>(vsapi->getVideoInfo(d->node)->width),
-                                                 static_cast<size_t>(vsapi->getVideoInfo(d->node)->height),
-                                                 compute::image_format{ d->clImageFormat },
-                                                 CL_MEM_READ_ONLY | CL_MEM_HOST_WRITE_ONLY });
-
-                d->dst.emplace(threadId,
-                               compute::image2d{ d->context,
-                                                 static_cast<size_t>(std::max(d->vi.width, d->vi.height)),
-                                                 static_cast<size_t>(std::max(d->vi.width, d->vi.height)),
-                                                 compute::image_format{ d->clImageFormat },
-                                                 CL_MEM_READ_WRITE | CL_MEM_HOST_READ_ONLY });
-
-                if (d->dh && d->dw)
-                    d->tmp.emplace(threadId,
-                                   compute::image2d{ d->context,
-                                                     static_cast<size_t>(std::max(d->vi.width, d->vi.height)),
-                                                     static_cast<size_t>(std::max(d->vi.width, d->vi.height)),
-                                                     compute::image_format{ d->clImageFormat },
-                                                     CL_MEM_READ_WRITE | CL_MEM_HOST_NO_ACCESS });
-                else
-                    d->tmp.emplace(threadId, compute::image2d{});
-            }
-        } catch (const compute::opencl_error & error) {
-            vsapi->setFilterError(("NNEDI3CL: " + error.error_string()).c_str(), frameCtx);
-            return nullptr;
-        }
-
         const VSFrameRef * src = vsapi->getFrameFilter(d->field > 1 ? n / 2 : n, d->node, frameCtx);
         VSFrameRef * dst = vsapi->newVideoFrame(d->vi.format, d->vi.width, d->vi.height, src, core);
 
@@ -235,7 +188,7 @@ static const VSFrameRef *VS_CC nnedi3clGetFrame(int n, int activationReason, voi
     return nullptr;
 }
 
-static void VS_CC nnedi3clFree(void *instanceData, VSCore *core, const VSAPI *vsapi) {
+static void VS_CC nnedi3clFree(void * instanceData, VSCore * core, const VSAPI * vsapi) {
     NNEDI3CLData * d = static_cast<NNEDI3CLData *>(instanceData);
 
     vsapi->freeNode(d->node);
@@ -245,7 +198,7 @@ static void VS_CC nnedi3clFree(void *instanceData, VSCore *core, const VSAPI *vs
     delete d;
 }
 
-void VS_CC nnedi3clCreate(const VSMap *in, VSMap *out, void *userData, VSCore *core, const VSAPI *vsapi) {
+void VS_CC nnedi3clCreate(const VSMap * in, VSMap * out, void * userData, VSCore * core, const VSAPI * vsapi) {
     std::unique_ptr<NNEDI3CLData> d = std::make_unique<NNEDI3CLData>();
     int err;
 
@@ -299,9 +252,9 @@ void VS_CC nnedi3clCreate(const VSMap *in, VSMap *out, void *userData, VSCore *c
         if (err)
             pscrn = (d->vi.format->sampleType == stInteger) ? 2 : 1;
 
-        int device = int64ToIntS(vsapi->propGetInt(in, "device", 0, &err));
+        int device_id = int64ToIntS(vsapi->propGetInt(in, "device", 0, &err));
         if (err)
-            device = -1;
+            device_id = -1;
 
         if (d->field < 0 || d->field > 3)
             throw std::string{ "field must be 0, 1, 2 or 3" };
@@ -335,7 +288,7 @@ void VS_CC nnedi3clCreate(const VSMap *in, VSMap *out, void *userData, VSCore *c
                 throw std::string{ "pscrn must be 1 for float input" };
         }
 
-        if (device >= static_cast<int>(compute::system::device_count()))
+        if (device_id >= static_cast<int>(compute::system::device_count()))
             throw std::string{ "device index out of range" };
 
         if (!!vsapi->propGetInt(in, "list_device", 0, &err)) {
@@ -366,14 +319,15 @@ void VS_CC nnedi3clCreate(const VSMap *in, VSMap *out, void *userData, VSCore *c
             return;
         }
 
-        d->device = compute::system::default_device();
-        if (device > -1)
-            d->device = compute::system::devices().at(device);
-        d->context = compute::context{ d->device };
+        compute::device device = compute::system::default_device();
+        if (device_id > -1)
+            device = compute::system::devices().at(device_id);
+        compute::context context{ device };
+        d->queue = compute::command_queue{ context, device };
 
         if (!!vsapi->propGetInt(in, "info", 0, &err)) {
             std::string text{ "=== Platform Info ===\n" };
-            const auto platform = d->device.platform();
+            const auto platform = device.platform();
             text += "Profile: " + platform.get_info<CL_PLATFORM_PROFILE>() + "\n";
             text += "Version: " + platform.get_info<CL_PLATFORM_VERSION>() + "\n";
             text += "Name: " + platform.get_info<CL_PLATFORM_NAME>() + "\n";
@@ -382,35 +336,35 @@ void VS_CC nnedi3clCreate(const VSMap *in, VSMap *out, void *userData, VSCore *c
             text += "\n";
 
             text += "=== Device Info ===\n";
-            text += "Name: " + d->device.get_info<CL_DEVICE_NAME>() + "\n";
-            text += "Vendor: " + d->device.get_info<CL_DEVICE_VENDOR>() + "\n";
-            text += "Profile: " + d->device.get_info<CL_DEVICE_PROFILE>() + "\n";
-            text += "Version: " + d->device.get_info<CL_DEVICE_VERSION>() + "\n";
-            text += "Max compute units: " + std::to_string(d->device.get_info<CL_DEVICE_MAX_COMPUTE_UNITS>()) + "\n";
-            text += "Max work-group size: " + std::to_string(d->device.get_info<CL_DEVICE_MAX_WORK_GROUP_SIZE>()) + "\n";
-            const auto max_work_item_sizes = d->device.get_info<CL_DEVICE_MAX_WORK_ITEM_SIZES>();
+            text += "Name: " + device.get_info<CL_DEVICE_NAME>() + "\n";
+            text += "Vendor: " + device.get_info<CL_DEVICE_VENDOR>() + "\n";
+            text += "Profile: " + device.get_info<CL_DEVICE_PROFILE>() + "\n";
+            text += "Version: " + device.get_info<CL_DEVICE_VERSION>() + "\n";
+            text += "Max compute units: " + std::to_string(device.get_info<CL_DEVICE_MAX_COMPUTE_UNITS>()) + "\n";
+            text += "Max work-group size: " + std::to_string(device.get_info<CL_DEVICE_MAX_WORK_GROUP_SIZE>()) + "\n";
+            const auto max_work_item_sizes = device.get_info<CL_DEVICE_MAX_WORK_ITEM_SIZES>();
             text += "Max work-item sizes: " + std::to_string(max_work_item_sizes[0]) + ", " + std::to_string(max_work_item_sizes[1]) + ", " + std::to_string(max_work_item_sizes[2]) + "\n";
-            text += "2D image max width: " + std::to_string(d->device.get_info<CL_DEVICE_IMAGE2D_MAX_WIDTH>()) + "\n";
-            text += "2D image max height: " + std::to_string(d->device.get_info<CL_DEVICE_IMAGE2D_MAX_HEIGHT>()) + "\n";
-            text += "Image support: " + std::string{ d->device.get_info<CL_DEVICE_IMAGE_SUPPORT>() ? "CL_TRUE" : "CL_FALSE" } +"\n";
-            const auto global_mem_cache_type = d->device.get_info<CL_DEVICE_GLOBAL_MEM_CACHE_TYPE>();
+            text += "2D image max width: " + std::to_string(device.get_info<CL_DEVICE_IMAGE2D_MAX_WIDTH>()) + "\n";
+            text += "2D image max height: " + std::to_string(device.get_info<CL_DEVICE_IMAGE2D_MAX_HEIGHT>()) + "\n";
+            text += "Image support: " + std::string{ device.get_info<CL_DEVICE_IMAGE_SUPPORT>() ? "CL_TRUE" : "CL_FALSE" } +"\n";
+            const auto global_mem_cache_type = device.get_info<CL_DEVICE_GLOBAL_MEM_CACHE_TYPE>();
             if (global_mem_cache_type == CL_NONE)
                 text += "Global memory cache type: CL_NONE\n";
             else if (global_mem_cache_type == CL_READ_ONLY_CACHE)
                 text += "Global memory cache type: CL_READ_ONLY_CACHE\n";
             else if (global_mem_cache_type == CL_READ_WRITE_CACHE)
                 text += "Global memory cache type: CL_READ_WRITE_CACHE\n";
-            text += "Global memory cache size: " + std::to_string(d->device.get_info<CL_DEVICE_GLOBAL_MEM_CACHE_SIZE>() / 1024) + " KB\n";
-            text += "Global memory size: " + std::to_string(d->device.get_info<CL_DEVICE_GLOBAL_MEM_SIZE>() / (1024 * 1024)) + " MB\n";
-            text += "Max constant buffer size: " + std::to_string(d->device.get_info<CL_DEVICE_MAX_CONSTANT_BUFFER_SIZE>() / 1024) + " KB\n";
-            text += "Max constant arguments: " + std::to_string(d->device.get_info<CL_DEVICE_MAX_CONSTANT_ARGS>()) + "\n";
-            text += "Local memory type: " + std::string{ d->device.get_info<CL_DEVICE_LOCAL_MEM_TYPE>() == CL_LOCAL ? "CL_LOCAL" : "CL_GLOBAL" } +"\n";
-            text += "Local memory size: " + std::to_string(d->device.get_info<CL_DEVICE_LOCAL_MEM_SIZE>() / 1024) + " KB\n";
-            text += "Available: " + std::string{ d->device.get_info<CL_DEVICE_AVAILABLE>() ? "CL_TRUE" : "CL_FALSE" } +"\n";
-            text += "Compiler available: " + std::string{ d->device.get_info<CL_DEVICE_COMPILER_AVAILABLE>() ? "CL_TRUE" : "CL_FALSE" } +"\n";
-            text += "OpenCL C version: " + d->device.get_info<CL_DEVICE_OPENCL_C_VERSION>() + "\n";
-            text += "Linker available: " + std::string{ d->device.get_info<CL_DEVICE_LINKER_AVAILABLE>() ? "CL_TRUE" : "CL_FALSE" } +"\n";
-            text += "Image max buffer size: " + std::to_string(d->device.get_info<size_t>(CL_DEVICE_IMAGE_MAX_BUFFER_SIZE) / 1024) + " KB";
+            text += "Global memory cache size: " + std::to_string(device.get_info<CL_DEVICE_GLOBAL_MEM_CACHE_SIZE>() / 1024) + " KB\n";
+            text += "Global memory size: " + std::to_string(device.get_info<CL_DEVICE_GLOBAL_MEM_SIZE>() / (1024 * 1024)) + " MB\n";
+            text += "Max constant buffer size: " + std::to_string(device.get_info<CL_DEVICE_MAX_CONSTANT_BUFFER_SIZE>() / 1024) + " KB\n";
+            text += "Max constant arguments: " + std::to_string(device.get_info<CL_DEVICE_MAX_CONSTANT_ARGS>()) + "\n";
+            text += "Local memory type: " + std::string{ device.get_info<CL_DEVICE_LOCAL_MEM_TYPE>() == CL_LOCAL ? "CL_LOCAL" : "CL_GLOBAL" } +"\n";
+            text += "Local memory size: " + std::to_string(device.get_info<CL_DEVICE_LOCAL_MEM_SIZE>() / 1024) + " KB\n";
+            text += "Available: " + std::string{ device.get_info<CL_DEVICE_AVAILABLE>() ? "CL_TRUE" : "CL_FALSE" } +"\n";
+            text += "Compiler available: " + std::string{ device.get_info<CL_DEVICE_COMPILER_AVAILABLE>() ? "CL_TRUE" : "CL_FALSE" } +"\n";
+            text += "OpenCL C version: " + device.get_info<CL_DEVICE_OPENCL_C_VERSION>() + "\n";
+            text += "Linker available: " + std::string{ device.get_info<CL_DEVICE_LINKER_AVAILABLE>() ? "CL_TRUE" : "CL_FALSE" } +"\n";
+            text += "Image max buffer size: " + std::to_string(device.get_info<size_t>(CL_DEVICE_IMAGE_MAX_BUFFER_SIZE) / 1024) + " KB";
 
             VSMap * args = vsapi->createMap();
             vsapi->propSetNode(args, "clip", d->node, paReplace);
@@ -448,13 +402,6 @@ void VS_CC nnedi3clCreate(const VSMap *in, VSMap *out, void *userData, VSCore *c
             d->vi.width *= 2;
 
         const int peak = (1 << d->vi.format->bitsPerSample) - 1;
-
-        const unsigned numThreads = vsapi->getCoreInfo(core)->numThreads;
-        d->queue.reserve(numThreads);
-        d->kernel.reserve(numThreads);
-        d->src.reserve(numThreads);
-        d->dst.reserve(numThreads);
-        d->tmp.reserve(numThreads);
 
         const std::string pluginPath{ vsapi->getPluginPath(vsapi->getPluginById("com.holywu.nnedi3cl", core)) };
         std::string weightsPath{ pluginPath.substr(0, pluginPath.find_last_of('/')) + "/nnedi3_weights.bin" };
@@ -637,14 +584,15 @@ void VS_CC nnedi3clCreate(const VSMap *in, VSMap *out, void *userData, VSCore *c
         const float scaleAsize = 1.0f / asize;
         const float scaleQual = 1.0f / qual;
 
-        d->weights0 = compute::buffer{ d->context, std::max(dims0, dims0new) * sizeof(cl_float), CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR | CL_MEM_HOST_NO_ACCESS, weights0 };
-        d->weights1Buffer = compute::buffer{ d->context, dims1 * 2 * sizeof(cl_float), CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR | CL_MEM_HOST_NO_ACCESS, weights1 };
+        d->weights0 = compute::buffer{ context, std::max(dims0, dims0new) * sizeof(cl_float), CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR | CL_MEM_HOST_NO_ACCESS, weights0 };
+        d->weights1Buffer = compute::buffer{ context, dims1 * 2 * sizeof(cl_float), CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR | CL_MEM_HOST_NO_ACCESS, weights1 };
         delete[] weights0;
         delete[] weights1;
 
-        if (static_cast<size_t>(dims1 * 2) > d->device.get_info<size_t>(CL_DEVICE_IMAGE_MAX_BUFFER_SIZE))
+        if (static_cast<size_t>(dims1 * 2) > device.get_info<size_t>(CL_DEVICE_IMAGE_MAX_BUFFER_SIZE))
             throw std::string{ "the device's image max buffer size is too small. Reduce nsize/nns...or buy a new graphics card" };
 
+        compute::program program;
         try {
             std::ostringstream options;
             options.imbue(std::locale{ "C" });
@@ -685,17 +633,42 @@ void VS_CC nnedi3clCreate(const VSMap *in, VSMap *out, void *userData, VSCore *c
                 options << " -D Y_STEP=1";
                 options << " -D Y_STRIDE=16";
             }
-            d->program = compute::program::build_with_source(source, d->context, options.str());
+            program = compute::program::build_with_source(source, context, options.str());
         } catch (const compute::opencl_error & error) {
-            throw error.error_string() + "\n" + d->program.build_log();
+            throw error.error_string() + "\n" + program.build_log();
         }
 
-        if (d->vi.format->bytesPerSample == 1)
-            d->clImageFormat = { CL_R, CL_UNSIGNED_INT8 };
-        else if (d->vi.format->bytesPerSample == 2)
-            d->clImageFormat = { CL_R, CL_UNSIGNED_INT16 };
+        if (d->vi.format->sampleType == stInteger)
+            d->kernel = program.create_kernel("filter_uint");
         else
-            d->clImageFormat = { CL_R, CL_FLOAT };
+            d->kernel = program.create_kernel("filter_float");
+
+        cl_image_format imageFormat;
+        if (d->vi.format->bytesPerSample == 1)
+            imageFormat = { CL_R, CL_UNSIGNED_INT8 };
+        else if (d->vi.format->bytesPerSample == 2)
+            imageFormat = { CL_R, CL_UNSIGNED_INT16 };
+        else
+            imageFormat = { CL_R, CL_FLOAT };
+
+        d->src = compute::image2d{ context,
+                                   static_cast<size_t>(vsapi->getVideoInfo(d->node)->width),
+                                   static_cast<size_t>(vsapi->getVideoInfo(d->node)->height),
+                                   compute::image_format{ imageFormat },
+                                   CL_MEM_READ_ONLY | CL_MEM_HOST_WRITE_ONLY };
+
+        d->dst = compute::image2d{ context,
+                                   static_cast<size_t>(std::max(d->vi.width, d->vi.height)),
+                                   static_cast<size_t>(std::max(d->vi.width, d->vi.height)),
+                                   compute::image_format{ imageFormat },
+                                   CL_MEM_READ_WRITE | CL_MEM_HOST_READ_ONLY };
+
+        d->tmp = (d->dh && d->dw) ? compute::image2d{ context,
+                                                      static_cast<size_t>(std::max(d->vi.width, d->vi.height)),
+                                                      static_cast<size_t>(std::max(d->vi.width, d->vi.height)),
+                                                      compute::image_format{ imageFormat },
+                                                      CL_MEM_READ_WRITE | CL_MEM_HOST_NO_ACCESS }
+                                  : compute::image2d{};
 
         {
             constexpr cl_image_format format = { CL_R, CL_FLOAT };
@@ -718,7 +691,7 @@ void VS_CC nnedi3clCreate(const VSMap *in, VSMap *out, void *userData, VSCore *c
 
             cl_int error = 0;
 
-            cl_mem mem = clCreateImage(d->context, 0, &format, &desc, nullptr, &error);
+            cl_mem mem = clCreateImage(context, 0, &format, &desc, nullptr, &error);
             if (!mem)
                 BOOST_THROW_EXCEPTION(compute::opencl_error(error));
 
@@ -738,13 +711,13 @@ void VS_CC nnedi3clCreate(const VSMap *in, VSMap *out, void *userData, VSCore *c
         return;
     }
 
-    vsapi->createFilter(in, out, "NNEDI3CL", nnedi3clInit, nnedi3clGetFrame, nnedi3clFree, fmParallel, 0, d.release(), core);
+    vsapi->createFilter(in, out, "NNEDI3CL", nnedi3clInit, nnedi3clGetFrame, nnedi3clFree, fmParallelRequests, 0, d.release(), core);
 }
 
 //////////////////////////////////////////
 // Init
 
-VS_EXTERNAL_API(void) VapourSynthPluginInit(VSConfigPlugin configFunc, VSRegisterFunction registerFunc, VSPlugin *plugin) {
+VS_EXTERNAL_API(void) VapourSynthPluginInit(VSConfigPlugin configFunc, VSRegisterFunction registerFunc, VSPlugin * plugin) {
     configFunc("com.holywu.nnedi3cl", "nnedi3cl", "An intra-field only deinterlacer", VAPOURSYNTH_API_VERSION, 1, plugin);
     registerFunc("NNEDI3CL",
                  "clip:clip;"
